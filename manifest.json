@@ -1,0 +1,20 @@
+{
+  "name": "Finanças Vida — Controle Financeiro Pessoal",
+  "short_name": "Finanças Vida",
+  "description": "Organize contas, orçamento, metas e o seu patrimônio a longo prazo — funciona offline.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "financas-vida",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F6FAF8",
+  "theme_color": "#0B5A47",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

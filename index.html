@@ -1,0 +1,2822 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,user-scalable=no">
+<title>Finanças Vida 💰</title>
+<!-- ═ PWA ═ -->
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0B5A47">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Finanças Vida">
+<link rel="icon" href="./icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => console.warn('SW não registrado:', err));
+  });
+}
+</script>
+<script type="module">
+// ════ FIREBASE (config vem do localStorage — veja a tela de configuração) ════
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, setDoc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// Config padrão do projeto Firebase — já vem pronta no app, assim quem recebe o
+// link cai direto na tela de login (não precisa colar nada). Config do Firebase
+// para apps web não é secreta (fica protegida pelas regras do Firestore/Auth, não
+// por sigilo), então é seguro deixá-la aqui.
+const BAKED_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD9CsAJqmUSdzL3kr-tCtSjEDjoyno8f4Y",
+  authDomain: "finaceiro-claude-plus.firebaseapp.com",
+  projectId: "finaceiro-claude-plus",
+  storageBucket: "finaceiro-claude-plus.firebasestorage.app",
+  messagingSenderId: "672339391600",
+  appId: "1:672339391600:web:494078704c1b233eb630b5",
+  measurementId: "G-75SXMBQ105"
+};
+function readStoredFirebaseConfig(){
+  try{
+    if(localStorage.getItem('financas_force_setup')) return null;
+    const raw = localStorage.getItem('financas_firebase_config');
+    if(!raw) return BAKED_FIREBASE_CONFIG;
+    const cfg = JSON.parse(raw);
+    if(cfg && cfg.apiKey && cfg.projectId && cfg.appId) return cfg;
+  } catch(e){}
+  return BAKED_FIREBASE_CONFIG;
+}
+const firebaseConfig = readStoredFirebaseConfig();
+window._firebaseConfigured = !!firebaseConfig;
+
+// ════ LICENÇA / E-MAILS PERMITIDOS ════
+// Só o admin pode liberar quem entra. Ninguém mais se cadastra sozinho, mesmo tendo o link do app.
+const ADMIN_EMAIL = 'chicho.vini7@hotmail.com';
+window._ADMIN_EMAIL = ADMIN_EMAIL;
+const LICENSE_CHECK_INTERVAL_MS = 2 * 60 * 1000; // reverifica a cada 2 minutos (detecta remoção/expiração)
+let _licenseWatcherId = null;
+
+if(firebaseConfig){
+  try{
+    const firebaseApp = initializeApp(firebaseConfig);
+    const auth = getAuth(firebaseApp);
+    let db_fs;
+    try{
+      db_fs = initializeFirestore(firebaseApp, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
+    } catch(e){
+      console.warn('Cache offline do Firestore indisponível, usando padrão online:', e);
+      db_fs = initializeFirestore(firebaseApp, {});
+    }
+    window._fbAuth = auth;
+    window._fbDb = db_fs;
+    window._fbFns = { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, updateProfile, doc, getDoc, setDoc, collection, getDocs, deleteDoc };
+
+    // Retorna true se pode continuar (autorizado e não expirado); false se foi deslogado
+    async function checkLicense(user){
+      if(user.email===ADMIN_EMAIL) return true;
+      try{
+        const key=user.email.toLowerCase().replace(/\./g,'_');
+        const snap=await getDoc(doc(db_fs,'allowed_emails',key));
+        if(!snap.exists()){
+          stopLicenseWatcher();
+          await signOut(auth);
+          alert('Este e-mail não está autorizado a usar o app. Peça para o administrador liberar seu acesso.');
+          return false;
+        }
+        const expiry=snap.data().expiry;
+        if(expiry && new Date(expiry)<new Date()){
+          stopLicenseWatcher();
+          await signOut(auth);
+          const expired=document.getElementById('expired-screen');
+          const authEl=document.getElementById('auth-screen');
+          if(expired) expired.style.display='flex';
+          if(authEl) authEl.style.display='none';
+          return false;
+        }
+        return true;
+      } catch(e){
+        console.error('Erro ao verificar licença:', e);
+        return true; // instabilidade de rede não expulsa o usuário
+      }
+    }
+    window._checkLicense = checkLicense;
+    function onVisibilityRecheck(){ if(document.visibilityState==='visible' && auth.currentUser) checkLicense(auth.currentUser); }
+    function startLicenseWatcher(user){
+      stopLicenseWatcher();
+      _licenseWatcherId=setInterval(()=>checkLicense(user), LICENSE_CHECK_INTERVAL_MS);
+      document.addEventListener('visibilitychange', onVisibilityRecheck);
+      window.addEventListener('focus', onVisibilityRecheck);
+    }
+    function stopLicenseWatcher(){
+      if(_licenseWatcherId){ clearInterval(_licenseWatcherId); _licenseWatcherId=null; }
+      document.removeEventListener('visibilitychange', onVisibilityRecheck);
+      window.removeEventListener('focus', onVisibilityRecheck);
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+      if(user){
+        const uid = user.uid;
+        window.currentUser = { email: user.email, name: user.displayName || user.email.split('@')[0], uid };
+        await new Promise(resolve => {
+          const check = () => (window._ensureUserData && window.showApp) ? resolve() : setTimeout(check, 50);
+          check();
+        });
+        try{
+          const ok = await checkLicense(user);
+          if(!ok) return;
+          await window._ensureUserData(uid);
+          await window.showApp();
+          startLicenseWatcher(user);
+        } catch(err){
+          console.error('Erro ao carregar app:', err);
+          if(window.showErrorScreen) window.showErrorScreen();
+        }
+      } else {
+        stopLicenseWatcher();
+        window.currentUser = null;
+        const appEl = document.getElementById('app-screen');
+        const authEl = document.getElementById('auth-screen');
+        const errorEl = document.getElementById('error-screen');
+        const setupEl = document.getElementById('setup-screen');
+        const expiredEl = document.getElementById('expired-screen');
+        if(appEl) appEl.style.display='none';
+        if(errorEl) errorEl.style.display='none';
+        if(expiredEl && expiredEl.style.display==='flex'){ /* mantém a tela de "acesso expirado" visível */ }
+        else if(setupEl && setupEl.style.display!=='none'){ /* mantém tela de config visível */ }
+        else if(authEl) authEl.style.display='flex';
+      }
+    });
+  } catch(e){
+    console.error('Configuração do Firebase inválida:', e);
+    window._firebaseConfigured = false;
+    window._firebaseConfigError = e.message;
+  }
+}
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --cream:#F6FAF8;--white:#FFFFFF;
+  --emerald:#0B5A47;--emerald-light:#1A9B60;--emerald-pale:#D5F5E3;
+  --gold:#B8860B;--gold-light:#D4A017;--gold-pale:#FBF0D9;
+  --mint:#1A9B60;--mint-light:#2ECC71;--mint-pale:#D5F5E3;
+  --amber:#D4860A;--amber-light:#F39C12;--amber-pale:#FEF3CD;
+  --rose:#C0392B;--rose-pale:#FADBD8;
+  --blue:#2E86AB;--blue-pale:#D6EAF8;
+  --purple:#7D3C98;--purple-pale:#E8DAEF;
+  --gray-900:#1A1A2E;--gray-700:#4A4A6A;--gray-500:#7F8C8D;--gray-300:#BDC3C7;--gray-100:#ECF0F1;
+  --radius:16px;--radius-sm:10px;--shadow:0 2px 16px rgba(11,90,71,.09);--shadow-lg:0 8px 32px rgba(11,90,71,.18);
+}
+html{touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y}
+body{font-family:'Nunito',sans-serif;background:var(--cream);color:var(--gray-900);min-height:100vh;overflow-x:hidden;touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y}
+
+/* ── OFFLINE BANNER ── */
+#offline-banner{position:fixed;top:0;left:0;right:0;background:var(--amber);color:white;text-align:center;font-weight:800;font-size:13px;padding:8px 16px;z-index:10000;display:none;align-items:center;justify-content:center;gap:8px}
+#offline-banner.show{display:flex}
+body.has-offline-banner .topbar{margin-top:36px}
+body.has-offline-banner #auth-screen,body.has-offline-banner #error-screen,body.has-offline-banner #setup-screen{padding-top:56px}
+
+/* ── DARK MODE ── */
+body.dark{--cream:#10151E;--white:#1B2230;--gray-900:#F2F3F7;--gray-700:#C7CBDA;--gray-500:#9AA0B4;--gray-300:#565B70;--gray-100:#28304045;--gray-100:#2A3140;--shadow:0 2px 16px rgba(0,0,0,.35);--shadow-lg:0 8px 32px rgba(0,0,0,.5)}
+body.dark .search-bar input,body.dark .form-group input,body.dark .form-group select,body.dark .form-group textarea{background:var(--gray-100);color:var(--gray-900)}
+body.dark .form-group input:focus,body.dark .form-group select:focus,body.dark .form-group textarea:focus{background:var(--white)}
+body.dark .topbar,body.dark .bottom-nav{background:var(--white)}
+body.dark .auth-tab.active{background:var(--white)}
+body.dark .filter-tab{background:var(--white)}
+
+/* ── AUTH / SETUP ── */
+#auth-screen,#setup-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:linear-gradient(145deg,var(--emerald) 0%,var(--emerald-light) 60%,#48C9B0 100%)}
+#setup-screen{display:none;align-items:flex-start;padding-top:40px}
+.auth-card{background:var(--white);border-radius:28px;padding:40px 36px;width:100%;max-width:400px;box-shadow:var(--shadow-lg)}
+.setup-card{background:var(--white);border-radius:28px;padding:36px 30px;width:100%;max-width:560px;box-shadow:var(--shadow-lg);margin:0 auto}
+.auth-logo{text-align:center;margin-bottom:28px}
+.auth-logo .paw{font-size:52px;display:block;margin-bottom:8px}
+.auth-logo h1{font-size:26px;font-weight:900;color:var(--emerald)}
+.auth-logo p{color:var(--gray-500);font-size:14px;margin-top:4px}
+.auth-tabs{display:flex;background:var(--gray-100);border-radius:12px;padding:4px;margin-bottom:24px;gap:4px}
+.auth-tab{flex:1;padding:10px;border:none;background:none;border-radius:9px;font-family:'Nunito',sans-serif;font-weight:700;font-size:14px;color:var(--gray-500);cursor:pointer;transition:all .2s}
+.auth-tab.active{background:var(--white);color:var(--emerald);box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-weight:700;font-size:13px;color:var(--gray-700);margin-bottom:6px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:12px 16px;border:2px solid var(--gray-100);border-radius:12px;font-family:'Nunito',sans-serif;font-size:16px;color:var(--gray-900);background:var(--cream);transition:border-color .2s;outline:none}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--emerald-light);background:var(--white)}
+.form-group textarea{resize:vertical;min-height:80px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border:none;border-radius:12px;font-family:'Nunito',sans-serif;font-weight:800;font-size:15px;cursor:pointer;transition:all .2s;text-decoration:none}
+.btn-primary{background:linear-gradient(135deg,var(--emerald),var(--emerald-light));color:white;width:100%}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(11,90,71,.4)}
+.btn-danger{background:var(--rose-pale);color:var(--rose)}
+.btn-danger:hover{background:var(--rose);color:white}
+.btn-success{background:var(--mint-pale);color:var(--mint)}
+.btn-success:hover{background:var(--mint);color:white}
+.btn-gold{background:var(--gold-pale);color:var(--gold)}
+.btn-gold:hover{background:var(--gold);color:white}
+.btn-sm{padding:8px 14px;font-size:13px;border-radius:9px}
+.btn-icon{width:36px;height:36px;padding:0;border-radius:50%;font-size:14px}
+.setup-steps{font-size:13px;color:var(--gray-700);line-height:1.9;padding-left:18px;margin-bottom:14px}
+.setup-steps code{background:var(--emerald-pale);padding:1px 6px;border-radius:4px;font-size:12px;color:var(--emerald)}
+.setup-rules{background:var(--gray-900);color:#D5F5E3;font-family:monospace;font-size:12px;padding:14px;border-radius:12px;white-space:pre-wrap;line-height:1.6;margin-bottom:14px;overflow-x:auto}
+.setup-note{background:var(--amber-pale);border:2px solid var(--amber);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--gray-700);line-height:1.6;margin-bottom:16px}
+
+/* ── APP ── */
+#app-screen{display:none;min-height:100vh;padding-bottom:80px}
+.topbar{background:white;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 12px rgba(0,0,0,.06);position:sticky;top:0;z-index:100}
+.topbar-brand{display:flex;align-items:center;gap:10px}
+.topbar-brand .paw-small{font-size:24px}
+.topbar-brand h2{font-size:18px;font-weight:900;color:var(--emerald)}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.topbar-user{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--emerald),var(--emerald-light));color:white;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;cursor:pointer}
+.notif-bell-wrap{position:relative;cursor:pointer;width:38px;height:38px;display:flex;align-items:center;justify-content:center}
+.notif-bell-wrap i{font-size:22px;color:var(--gray-700)}
+#notif-badge{background:var(--rose);color:white;border-radius:50%;width:18px;height:18px;font-size:10px;font-weight:800;display:none;align-items:center;justify-content:center;position:absolute;top:0;right:0;border:2px solid white;pointer-events:none}
+
+.page{display:none;padding:20px;max-width:640px;margin:0 auto;animation:fadeIn .2s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── BOTTOM NAV ── */
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:white;display:flex;box-shadow:0 -2px 16px rgba(0,0,0,.08);z-index:100}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;padding:10px 4px 6px;border:none;background:none;cursor:pointer;color:var(--gray-300);font-family:'Nunito',sans-serif;font-size:10px;font-weight:700;transition:color .2s;gap:2px}
+.nav-item.active{color:var(--emerald)}
+.nav-item i{font-size:20px}
+.nav-item .nav-dot{width:5px;height:5px;background:var(--emerald);border-radius:50%;display:none}
+.nav-item.active .nav-dot{display:block}
+
+/* ── DASHBOARD ── */
+.greeting{margin-bottom:20px}
+.greeting h2{font-size:22px;font-weight:900;color:var(--gray-900)}
+.greeting p{color:var(--gray-500);font-size:14px;margin-top:2px}
+.networth-card{background:linear-gradient(135deg,var(--emerald),var(--emerald-light));border-radius:var(--radius);padding:22px;margin-bottom:16px;color:white;box-shadow:var(--shadow-lg)}
+.networth-card .nw-label{font-size:13px;opacity:.85;font-weight:700}
+.networth-card .nw-val{font-size:32px;font-weight:900;margin-top:4px}
+.networth-card .nw-sub{font-size:12px;opacity:.8;margin-top:6px}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
+.stat-card{background:var(--white);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);position:relative;overflow:hidden;cursor:default}
+.stat-card::before{content:'';position:absolute;top:-12px;right:-12px;width:64px;height:64px;border-radius:50%;opacity:.10}
+.stat-card.emerald::before{background:var(--emerald)}
+.stat-card.mint::before{background:var(--mint)}
+.stat-card.amber::before{background:var(--amber)}
+.stat-card.rose::before{background:var(--rose)}
+.stat-card.gold::before{background:var(--gold)}
+.stat-card .stat-icon{font-size:24px;margin-bottom:10px}
+.stat-card .stat-val{font-size:24px;font-weight:900;line-height:1}
+.stat-card .stat-label{font-size:12px;color:var(--gray-500);font-weight:600;margin-top:4px}
+.stat-card.emerald .stat-val{color:var(--emerald)}
+.stat-card.mint .stat-val{color:var(--mint)}
+.stat-card.amber .stat-val{color:var(--amber)}
+.stat-card.rose .stat-val{color:var(--rose)}
+.stat-card.gold .stat-val{color:var(--gold)}
+.section-title{font-size:16px;font-weight:800;color:var(--gray-900);margin-bottom:12px;display:flex;align-items:center;gap:8px;justify-content:space-between}
+.section-title .badge{background:var(--emerald-pale);color:var(--emerald);font-size:12px;padding:2px 8px;border-radius:20px}
+.section-title .see-all{font-size:12px;color:var(--emerald);font-weight:700;cursor:pointer}
+.chart-card{background:var(--white);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
+.chart-card h3{font-size:14px;font-weight:800;color:var(--gray-700);margin-bottom:16px}
+
+/* ── LISTAS GENÉRICAS (contas, lançamentos, metas) ── */
+.search-bar{position:relative;margin-bottom:16px}
+.search-bar input{width:100%;padding:12px 16px 12px 44px;border:2px solid var(--gray-100);border-radius:14px;font-family:'Nunito',sans-serif;font-size:16px;background:white;outline:none;transition:border-color .2s}
+.search-bar input:focus{border-color:var(--emerald-light)}
+.search-bar i{position:absolute;left:16px;top:50%;transform:translateY(-50%);color:var(--gray-300)}
+.fab{position:fixed;bottom:90px;right:20px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--emerald),var(--emerald-light));color:white;border:none;font-size:22px;cursor:pointer;box-shadow:0 6px 20px rgba(11,90,71,.4);transition:all .2s;z-index:99;display:flex;align-items:center;justify-content:center}
+.fab:hover{transform:scale(1.08)}
+.item-card{background:var(--white);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:10px;display:flex;align-items:center;gap:14px}
+.item-icon{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;color:white}
+.item-info{flex:1;min-width:0}
+.item-info strong{font-size:15px;font-weight:800;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item-info span{font-size:12px;color:var(--gray-500);display:block;margin-top:1px}
+.item-val{font-weight:900;font-size:15px;text-align:right;flex-shrink:0}
+.item-val.pos{color:var(--mint)}
+.item-val.neg{color:var(--rose)}
+.item-actions{display:flex;gap:6px;margin-top:8px}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.tag-emerald{background:var(--emerald-pale);color:var(--emerald)}
+.tag-mint{background:var(--mint-pale);color:var(--mint)}
+.tag-amber{background:var(--amber-pale);color:var(--amber)}
+.tag-rose{background:var(--rose-pale);color:var(--rose)}
+.tag-gold{background:var(--gold-pale);color:var(--gold)}
+.tag-purple{background:var(--purple-pale);color:var(--purple)}
+.tag-blue{background:var(--blue-pale);color:var(--blue)}
+
+/* ── PROGRESS BARS (orçamento, metas) ── */
+.progress-outer{background:var(--gray-100);border-radius:20px;height:10px;overflow:hidden;margin-top:8px}
+.progress-inner{height:100%;border-radius:20px;transition:width .3s}
+
+/* ── CONTAS ── */
+.account-card{background:var(--white);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:12px}
+.account-top{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+.account-icon{width:48px;height:48px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:20px;color:white;flex-shrink:0}
+.account-info{flex:1;min-width:0}
+.account-info strong{font-size:16px;font-weight:800;display:block}
+.account-info span{font-size:12px;color:var(--gray-500)}
+.account-balance{font-size:22px;font-weight:900;text-align:right}
+
+/* ── METAS ── */
+.goal-card{background:var(--white);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:12px}
+.goal-top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.goal-icon{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:18px;color:white;flex-shrink:0}
+.goal-info{flex:1}
+.goal-info strong{font-size:15px;font-weight:800;display:block}
+.goal-info span{font-size:12px;color:var(--gray-500)}
+
+/* ── NOTIFICAÇÕES ── */
+.notif-item{background:var(--white);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-bottom:10px;display:flex;gap:14px;align-items:flex-start}
+.notif-icon{font-size:26px;flex-shrink:0}
+.notif-info{flex:1}
+.notif-info h4{font-size:15px;font-weight:800}
+.notif-info p{font-size:13px;color:var(--gray-500);margin-top:3px;line-height:1.5}
+.notif-item.urgent{border-left:4px solid var(--rose)}
+.notif-item.warning{border-left:4px solid var(--amber)}
+.notif-item.success{border-left:4px solid var(--mint)}
+.notif-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+
+/* ── CONFIGURAÇÕES ── */
+.config-section{background:var(--white);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;margin-bottom:16px}
+.config-item{padding:16px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--gray-100);cursor:pointer;transition:background .15s}
+.config-item:last-child{border-bottom:none}
+.config-item:hover{background:var(--cream)}
+.config-icon{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.config-item-info{flex:1}
+.config-item-info strong{font-size:15px;font-weight:700;display:block}
+.config-item-info span{font-size:12px;color:var(--gray-500)}
+.config-item i.fa-chevron-right{color:var(--gray-300)}
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:none;align-items:flex-end;justify-content:center;backdrop-filter:blur(4px)}
+.modal-overlay.active{display:flex}
+.modal{background:var(--white);border-radius:28px 28px 0 0;width:100%;max-width:560px;max-height:92vh;overflow-y:auto;padding:28px 24px 44px;animation:slideUp .25s ease}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.modal-handle{width:40px;height:4px;background:var(--gray-100);border-radius:2px;margin:0 auto 20px}
+.modal-title{font-size:20px;font-weight:900;color:var(--gray-900);margin-bottom:20px}
+.modal-actions{display:flex;gap:10px;margin-top:20px}
+.modal-actions .btn{flex:1}
+.delete-warning{background:var(--rose-pale);border:2px solid var(--rose);border-radius:12px;padding:14px;margin-bottom:16px;text-align:center}
+.delete-warning p{color:var(--rose);font-weight:700;font-size:14px;line-height:1.5}
+.delete-warning strong{font-size:16px;display:block;margin-bottom:4px}
+
+/* ── TOAST ── */
+#toast{position:fixed;top:20px;left:50%;transform:translateX(-50%) translateY(-80px);background:var(--gray-900);color:white;padding:12px 22px;border-radius:14px;font-weight:700;font-size:14px;z-index:9999;transition:transform .3s;white-space:nowrap;max-width:90vw;text-align:center}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.success{background:var(--mint)}
+#toast.error{background:var(--rose)}
+#toast.warning{background:var(--amber)}
+
+/* ── MISC ── */
+.empty-state{text-align:center;padding:50px 20px}
+.empty-state .empty-icon{font-size:60px;margin-bottom:16px;opacity:.5}
+.empty-state h3{font-size:18px;font-weight:800;color:var(--gray-700);margin-bottom:8px}
+.empty-state p{color:var(--gray-500);font-size:14px}
+.divider{height:1px;background:var(--gray-100);margin:16px 0}
+.input-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.color-picker{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.color-opt{width:32px;height:32px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:all .2s}
+.color-opt.selected{border-color:var(--gray-900);transform:scale(1.15)}
+.icon-picker{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.icon-opt{width:38px;height:38px;border-radius:12px;background:var(--gray-100);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;color:var(--gray-700);border:2px solid transparent}
+.icon-opt.selected{border-color:var(--emerald);background:var(--emerald-pale);color:var(--emerald)}
+.tabs-filter{display:flex;gap:8px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px}
+.tabs-filter::-webkit-scrollbar{display:none}
+.filter-tab{padding:7px 16px;border-radius:20px;border:2px solid var(--gray-100);background:white;font-family:'Nunito',sans-serif;font-weight:700;font-size:13px;color:var(--gray-500);cursor:pointer;white-space:nowrap;transition:all .2s}
+.filter-tab.active{background:var(--emerald);border-color:var(--emerald);color:white}
+.info-box{background:var(--amber-pale);border:2px solid var(--amber);border-radius:12px;padding:12px 16px;font-size:13px;color:var(--gray-700);margin-bottom:16px;line-height:1.5}
+.info-box strong{color:var(--amber)}
+.toggle-wrap{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.toggle{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:var(--gray-300);border-radius:24px;cursor:pointer;transition:.2s}
+.toggle-slider:before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s}
+.toggle input:checked + .toggle-slider{background:var(--mint)}
+.toggle input:checked + .toggle-slider:before{transform:translateX(20px)}
+.toggle-label{font-size:14px;font-weight:700;color:var(--gray-700)}
+</style>
+</head>
+<body>
+
+<div id="offline-banner"><i class="fas fa-wifi" style="opacity:.8"></i> <span>Você está offline — o app continua funcionando e sincroniza depois</span></div>
+
+<!-- ══ CONFIGURAÇÃO INICIAL DO FIREBASE ══ -->
+<div id="setup-screen">
+  <div class="setup-card">
+    <div class="auth-logo">
+      <span class="paw">💰</span>
+      <h1>Finanças Vida</h1>
+      <p>Antes de começar, conecte o app ao seu Firebase (gratuito)</p>
+    </div>
+    <div class="info-box"><strong>Por quê?</strong> Seus dados financeiros ficam salvos com segurança na sua própria conta Google/Firebase — ninguém além de você tem acesso, e dá pra usar em vários aparelhos.</div>
+    <details open>
+      <summary style="font-weight:800;color:var(--emerald);cursor:pointer;margin-bottom:10px">📋 Passo a passo (5 minutos)</summary>
+      <ol class="setup-steps">
+        <li>Acesse <strong>console.firebase.google.com</strong> e crie um projeto (pode ser "financas-vida")</li>
+        <li>No menu lateral: <strong>Compilação → Authentication</strong> → aba "Sign-in method" → ative <strong>E-mail/senha</strong></li>
+        <li><strong>Compilação → Firestore Database</strong> → Criar banco de dados → modo produção</li>
+        <li>Em Firestore, aba <strong>Regras</strong>, cole o texto abaixo e clique em Publicar</li>
+        <li>Volte em ⚙️ <strong>Configurações do projeto → Geral</strong> → role até "Seus apps" → clique no ícone <code>&lt;/&gt;</code> (Web) → registre um app</li>
+        <li>Copie o bloco <code>const firebaseConfig = {'{'}...{'}'}</code> que aparecer e cole no campo abaixo</li>
+      </ol>
+    </details>
+    <div class="setup-rules">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    match /allowed_emails/{emailKey} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.token.email == 'chicho.vini7@hotmail.com';
+    }
+  }
+}</div>
+    <div class="setup-note"><i class="fas fa-user-shield"></i> Só quem estiver na lista de e-mails liberados (gerenciada pelo administrador dentro do app, em Configurações) consegue criar conta e entrar — mesmo com o link do app em mãos, ninguém mais consegue usar.</div>
+    <div class="setup-note"><i class="fas fa-triangle-exclamation"></i> Depois de publicar o app (ex: no Netlify), volte em Authentication → Settings → Authorized domains e adicione o domínio do site — senão o login trava com erro "unauthorized-domain".</div>
+    <div class="form-group">
+      <label>Cole aqui o bloco firebaseConfig</label>
+      <textarea id="setup-config-input" rows="7" placeholder="const firebaseConfig = {&#10;  apiKey: &quot;...&quot;,&#10;  authDomain: &quot;...&quot;,&#10;  projectId: &quot;...&quot;,&#10;  ...&#10;};"></textarea>
+    </div>
+    <div id="setup-status" style="font-size:13px;font-weight:700;margin-bottom:12px;min-height:18px"></div>
+    <button class="btn btn-primary" onclick="saveFirebaseConfigFromInput()"><i class="fas fa-plug"></i> Salvar e conectar</button>
+  </div>
+</div>
+
+<!-- ══ AUTH ══ -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <span class="paw">💰</span>
+      <h1>Finanças Vida</h1>
+      <p>Seu controle financeiro para a vida toda</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login',this)">Entrar</button>
+      <button class="auth-tab" onclick="switchAuthTab('register',this)">Cadastrar</button>
+    </div>
+    <div id="login-form">
+      <div class="form-group"><label>E-mail</label><input type="email" id="login-email" placeholder="seu@email.com"></div>
+      <div class="form-group"><label>Senha</label><input type="password" id="login-pass" placeholder="••••••••"></div>
+      <button class="btn btn-primary" onclick="doLogin()"><i class="fas fa-sign-in-alt"></i> Entrar</button>
+      <p style="text-align:center;margin-top:14px"><button onclick="showForgotPassword()" style="background:none;border:none;color:var(--emerald-light);font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;cursor:pointer;text-decoration:underline">Esqueci minha senha</button></p>
+    </div>
+    <div id="forgot-form" style="display:none">
+      <p style="font-size:13px;color:var(--gray-500);margin-bottom:16px;line-height:1.5">Digite seu e-mail cadastrado e enviaremos um link para redefinir sua senha.</p>
+      <div class="form-group"><label>E-mail</label><input type="email" id="forgot-email" placeholder="seu@email.com"></div>
+      <button class="btn btn-primary" onclick="doResetPassword()"><i class="fas fa-paper-plane"></i> Enviar link de recuperação</button>
+      <p style="text-align:center;margin-top:12px"><button onclick="showForgotPassword(false)" style="background:none;border:none;color:var(--gray-500);font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;cursor:pointer">← Voltar para o login</button></p>
+    </div>
+    <div id="register-form" style="display:none">
+      <div class="form-group"><label>Seu nome</label><input type="text" id="reg-nome" placeholder="Ex: Maria Silva"></div>
+      <div class="form-group"><label>E-mail</label><input type="email" id="reg-email" placeholder="seu@email.com"></div>
+      <div class="form-group"><label>Senha</label><input type="password" id="reg-pass" placeholder="Mínimo 6 caracteres"></div>
+      <button class="btn btn-primary" onclick="doRegister()"><i class="fas fa-user-plus"></i> Criar Conta</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ ERRO DE CONEXÃO ══ -->
+<div id="error-screen" style="display:none;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:linear-gradient(145deg,var(--emerald) 0%,var(--emerald-light) 60%,#48C9B0 100%)">
+  <div class="auth-card" style="text-align:center">
+    <div style="font-size:56px;margin-bottom:16px">📡</div>
+    <h2 style="font-size:22px;font-weight:900;color:var(--rose);margin-bottom:10px">Sem conexão</h2>
+    <p style="color:var(--gray-500);font-size:14px;line-height:1.6;margin-bottom:20px">Não foi possível conectar ao servidor.<br>Verifique sua internet e tente novamente.</p>
+    <button class="btn btn-primary" onclick="tentarNovamente()" style="margin-bottom:10px"><i class="fas fa-redo"></i> Tentar novamente</button>
+  </div>
+</div>
+
+<!-- ══ ACESSO EXPIRADO / NÃO AUTORIZADO ══ -->
+<div id="expired-screen" style="display:none;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:linear-gradient(145deg,var(--emerald) 0%,var(--emerald-light) 60%,#48C9B0 100%)">
+  <div class="auth-card" style="text-align:center">
+    <div style="font-size:56px;margin-bottom:16px">⏰</div>
+    <h2 style="font-size:22px;font-weight:900;color:var(--rose);margin-bottom:10px">Acesso expirado</h2>
+    <p style="color:var(--gray-500);font-size:14px;line-height:1.6;margin-bottom:20px" id="expired-msg">Seu período de acesso encerrou. Fale com o administrador para renovar.</p>
+    <button class="btn btn-primary" onclick="doLogout()" style="margin-bottom:10px"><i class="fas fa-sign-out-alt"></i> Sair</button>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="app-screen">
+  <div class="topbar">
+    <div class="topbar-brand"><span class="paw-small">💰</span><h2 id="topbar-name">Finanças Vida</h2></div>
+    <div class="topbar-right">
+      <div class="notif-bell-wrap" onclick="showPage('notificacoes')">
+        <i class="fas fa-bell"></i>
+        <div id="notif-badge"></div>
+      </div>
+      <div class="topbar-user" id="topbar-avatar" onclick="showPage('config')">F</div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div class="page active" id="page-dashboard">
+    <div class="greeting">
+      <h2 id="dash-greeting">Olá! 👋</h2>
+      <p id="dash-date">Carregando...</p>
+    </div>
+    <div class="networth-card">
+      <div class="nw-label"><i class="fas fa-wallet"></i> PATRIMÔNIO LÍQUIDO</div>
+      <div class="nw-val" id="dash-networth">R$ 0,00</div>
+      <div class="nw-sub" id="dash-networth-sub">Somando todas as suas contas</div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <button class="btn-icon" style="background:var(--emerald-pale);color:var(--emerald)" onclick="shiftDashMonth(-1)" title="Mês anterior"><i class="fas fa-chevron-left"></i></button>
+      <div style="text-align:center">
+        <strong id="dash-mes-label" style="font-size:15px;color:var(--gray-900)">&nbsp;</strong>
+        <div id="dash-mes-hoje" style="font-size:11px;color:var(--emerald);font-weight:800;cursor:pointer;display:none" onclick="goToDashMonthHoje()">← Voltar para o mês atual</div>
+      </div>
+      <button class="btn-icon" style="background:var(--emerald-pale);color:var(--emerald)" onclick="shiftDashMonth(1)" title="Próximo mês"><i class="fas fa-chevron-right"></i></button>
+    </div>
+    <div class="stats-grid" id="dash-stats"></div>
+    <div class="section-title"><span><i class="fas fa-chart-line" style="color:var(--emerald)"></i> Evolução patrimonial</span></div>
+    <div class="chart-card"><canvas id="chart-evolucao" height="180"></canvas></div>
+    <div class="section-title"><span><i class="fas fa-chart-pie" style="color:var(--purple)"></i> Gastos do mês por categoria</span></div>
+    <div class="chart-card"><canvas id="chart-categorias" height="200"></canvas></div>
+    <div id="dash-cat-detalhe" style="margin-bottom:16px"></div>
+    <div class="section-title"><span><i class="fas fa-bell" style="color:var(--amber)"></i> Alertas</span><span class="badge" id="dash-alert-count">0</span></div>
+    <div id="dash-alerts-list"></div>
+    <div class="section-title"><span><i class="fas fa-bullseye" style="color:var(--purple)"></i> Metas em destaque</span><span class="see-all" onclick="showPage('metas')">Ver todas</span></div>
+    <div id="dash-goals-list"></div>
+  </div>
+
+  <!-- LANÇAMENTOS -->
+  <div class="page" id="page-lancamentos">
+    <div class="search-bar"><i class="fas fa-search"></i><input type="text" placeholder="Buscar lançamento..." oninput="filterLancamentos(this.value)"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+      <button class="btn-icon" style="background:var(--gray-100);color:var(--gray-700);flex-shrink:0" onclick="shiftLancMes(-1)" title="Mês anterior"><i class="fas fa-chevron-left"></i></button>
+      <input type="month" id="lanc-mes-filter" onchange="filterLancMes(this.value)" style="flex:1;min-width:0;padding:10px 14px;border:2px solid var(--gray-100);border-radius:12px;font-family:'Nunito',sans-serif;font-size:14px;background:var(--white);color:var(--gray-900);outline:none">
+      <button class="btn-icon" style="background:var(--gray-100);color:var(--gray-700);flex-shrink:0" onclick="shiftLancMes(1)" title="Próximo mês"><i class="fas fa-chevron-right"></i></button>
+      <button class="btn-icon" style="background:var(--rose-pale);color:var(--rose);flex-shrink:0" onclick="filterLancMes('')" title="Ver todos os meses"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="lanc-mes-resumo"></div>
+    <div class="tabs-filter">
+      <button class="filter-tab active" onclick="filterLancTipo('todos',this)">Todos</button>
+      <button class="filter-tab" onclick="filterLancTipo('receita',this)">💰 Receitas</button>
+      <button class="filter-tab" onclick="filterLancTipo('despesa',this)">💸 Despesas</button>
+      <button class="filter-tab" onclick="filterLancTipo('transferencia',this)">🔁 Transferências</button>
+      <button class="filter-tab" onclick="filterLancTipo('pendente',this)">⏳ Pendentes</button>
+    </div>
+    <div id="lanc-list"></div>
+    <div id="lanc-empty" class="empty-state" style="display:none">
+      <div class="empty-icon">💸</div>
+      <h3>Nenhum lançamento</h3>
+      <p>Toque no + para registrar uma receita, despesa ou transferência</p>
+    </div>
+  </div>
+
+  <!-- CONTAS -->
+  <div class="page" id="page-contas">
+    <div class="section-title"><span><i class="fas fa-landmark" style="color:var(--emerald)"></i> Minhas contas</span><span class="see-all" onclick="openTransferModal()">Transferir</span></div>
+    <div id="contas-list"></div>
+    <div id="contas-empty" class="empty-state" style="display:none">
+      <div class="empty-icon">🏦</div>
+      <h3>Nenhuma conta cadastrada</h3>
+      <p>Toque no + para adicionar sua primeira conta, carteira ou cartão</p>
+    </div>
+  </div>
+
+  <!-- METAS -->
+  <div class="page" id="page-metas">
+    <div class="info-box" id="metas-tip"><strong>Dica:</strong> uma reserva de emergência ideal costuma cobrir de 3 a 6 meses das suas despesas fixas.</div>
+    <div id="metas-list"></div>
+    <div id="metas-empty" class="empty-state" style="display:none">
+      <div class="empty-icon">🎯</div>
+      <h3>Nenhuma meta cadastrada</h3>
+      <p>Toque no + para criar sua primeira meta financeira</p>
+    </div>
+  </div>
+
+  <!-- RELATÓRIOS -->
+  <div class="page" id="page-relatorios">
+    <div class="tabs-filter">
+      <button class="filter-tab" onclick="filterRelPeriodo('mes',this)">Este mês</button>
+      <button class="filter-tab" onclick="filterRelPeriodo('3m',this)">3 meses</button>
+      <button class="filter-tab active" onclick="filterRelPeriodo('6m',this)">6 meses</button>
+      <button class="filter-tab" onclick="filterRelPeriodo('12m',this)">12 meses</button>
+      <button class="filter-tab" onclick="filterRelPeriodo('tudo',this)">Tudo</button>
+    </div>
+    <div class="chart-card"><h3><i class="fas fa-chart-bar"></i> Receitas x Despesas</h3><canvas id="chart-rel-barra" height="200"></canvas></div>
+    <div class="chart-card"><h3><i class="fas fa-chart-pie"></i> Despesas por categoria</h3><canvas id="chart-rel-pizza" height="220"></canvas></div>
+    <div class="section-title"><span><i class="fas fa-sliders-h" style="color:var(--emerald)"></i> Orçamento do mês (cada real no seu lugar)</span></div>
+    <div class="chart-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <button class="btn-icon" style="background:var(--emerald-pale);color:var(--emerald)" onclick="shiftOrcamentoMes(-1)" title="Mês anterior"><i class="fas fa-chevron-left"></i></button>
+        <strong id="orcamento-mes-label" style="font-size:14px;color:var(--gray-900)">&nbsp;</strong>
+        <button class="btn-icon" style="background:var(--emerald-pale);color:var(--emerald)" onclick="shiftOrcamentoMes(1)" title="Próximo mês"><i class="fas fa-chevron-right"></i></button>
+      </div>
+      <div id="orcamento-nao-alocado" style="margin-bottom:14px"></div>
+      <div id="rel-orcamento"></div>
+      <p style="font-size:11.5px;color:var(--gray-500);margin-top:6px;line-height:1.5">Toque no valor de orçamento de uma categoria pra ajustar quanto ela recebe neste mês. O que sobrar (ou faltar) de um mês passa pro saldo do mês seguinte — igual uma reserva por categoria.</p>
+    </div>
+    <div class="section-title"><span><i class="fas fa-seedling" style="color:var(--gold)"></i> Projeção patrimonial de longo prazo</span></div>
+    <div class="chart-card">
+      <div class="input-row" style="margin-bottom:14px">
+        <div class="form-group" style="margin-bottom:0"><label>Anos</label>
+          <select id="proj-anos" onchange="renderProjecao()"><option value="5">5 anos</option><option value="10" selected>10 anos</option><option value="20">20 anos</option><option value="30">30 anos</option></select>
+        </div>
+        <div class="form-group" style="margin-bottom:0"><label>Rendimento anual estimado (%)</label><input type="number" id="proj-taxa" value="8" min="0" max="100" step="0.5" oninput="renderProjecao()"></div>
+      </div>
+      <canvas id="chart-projecao" height="200"></canvas>
+      <p id="proj-sub" style="font-size:12px;color:var(--gray-500);margin-top:10px;line-height:1.6"></p>
+    </div>
+    <button class="btn btn-success" style="width:100%;margin-top:6px" onclick="exportCSV()"><i class="fas fa-file-csv"></i> Exportar relatório CSV</button>
+  </div>
+
+  <!-- NOTIFICAÇÕES -->
+  <div class="page" id="page-notificacoes">
+    <div class="section-title"><span><i class="fas fa-bell" style="color:var(--rose)"></i> Alertas</span></div>
+    <div id="notif-list"></div>
+  </div>
+
+  <!-- CONFIGURAÇÕES -->
+  <div class="page" id="page-config">
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--emerald),var(--emerald-light));color:white;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;margin:0 auto 12px" id="config-avatar">F</div>
+      <h3 id="config-name" style="font-size:20px;font-weight:900"></h3>
+      <p id="config-email" style="color:var(--gray-500);font-size:14px"></p>
+    </div>
+
+    <div class="config-section">
+      <div class="config-item" style="cursor:default">
+        <div class="config-icon" style="background:var(--purple-pale);color:var(--purple)"><i class="fas fa-moon"></i></div>
+        <div class="config-item-info"><strong>Modo escuro</strong><span>Reduz o brilho da tela</span></div>
+        <label class="toggle"><input type="checkbox" id="dark-mode-toggle" onchange="toggleDarkMode(this.checked)"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="config-item" style="cursor:default">
+        <div class="config-icon" style="background:var(--amber-pale);color:var(--amber)"><i class="fas fa-bell"></i></div>
+        <div class="config-item-info"><strong>Notificações do navegador</strong><span id="notif-perm-status">Avisar sobre contas a vencer</span></div>
+        <label class="toggle"><input type="checkbox" id="push-notif-toggle" onchange="togglePushNotifications(this.checked)"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="config-item" id="install-app-item" onclick="installApp()" style="display:none">
+        <div class="config-icon" style="background:var(--emerald-pale);color:var(--emerald)"><i class="fas fa-download"></i></div>
+        <div class="config-item-info"><strong>Instalar aplicativo</strong><span>Adicionar à tela inicial, uso offline</span></div>
+        <i class="fas fa-chevron-right"></i>
+      </div>
+      <div class="config-item" style="cursor:default">
+        <div class="config-icon" style="background:var(--mint-pale);color:var(--mint)" id="sync-status-icon"><i class="fas fa-check"></i></div>
+        <div class="config-item-info"><strong id="sync-status-title">Conectado</strong><span id="sync-status-sub">Dados sincronizados na nuvem</span></div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-item" onclick="openCategoriasManager()"><div class="config-icon" style="background:var(--emerald-pale);color:var(--emerald)"><i class="fas fa-tags"></i></div><div class="config-item-info"><strong>Categorias</strong><span>Gerenciar categorias e orçamento</span></div><i class="fas fa-chevron-right"></i></div>
+      <div class="config-item" onclick="openRecorrenciasManager()"><div class="config-icon" style="background:var(--gold-pale);color:var(--gold)"><i class="fas fa-sync-alt"></i></div><div class="config-item-info"><strong>Receitas e despesas automáticas</strong><span>Salário e contas fixas que se lançam sozinhas</span></div><i class="fas fa-chevron-right"></i></div>
+      <div class="config-item" onclick="showPage('notificacoes')"><div class="config-icon" style="background:var(--rose-pale);color:var(--rose)"><i class="fas fa-bell"></i></div><div class="config-item-info"><strong>Alertas</strong><span>Ver contas a vencer e avisos</span></div><i class="fas fa-chevron-right"></i></div>
+      <div class="config-item" onclick="exportCSV()"><div class="config-icon" style="background:var(--mint-pale);color:var(--mint)"><i class="fas fa-file-csv"></i></div><div class="config-item-info"><strong>Exportar relatório CSV</strong><span>Planilha com todos os lançamentos</span></div><i class="fas fa-chevron-right"></i></div>
+      <div class="config-item" onclick="exportData()"><div class="config-icon" style="background:var(--blue-pale);color:var(--blue)"><i class="fas fa-download"></i></div><div class="config-item-info"><strong>Backup completo (JSON)</strong><span>Exportar todos os dados</span></div><i class="fas fa-chevron-right"></i></div>
+      <div class="config-item" onclick="importData()"><div class="config-icon" style="background:var(--purple-pale);color:var(--purple)"><i class="fas fa-upload"></i></div><div class="config-item-info"><strong>Restaurar backup</strong><span>Importar arquivo JSON</span></div><i class="fas fa-chevron-right"></i></div>
+    </div>
+
+    <div class="config-section">
+      <div class="config-item" onclick="doLogout()"><div class="config-icon" style="background:var(--rose-pale);color:var(--rose)"><i class="fas fa-sign-out-alt"></i></div><div class="config-item-info"><strong>Sair da conta</strong><span>Fazer logout</span></div><i class="fas fa-chevron-right"></i></div>
+    </div>
+
+    <!-- PAINEL ADMIN (visível só para o administrador) -->
+    <div id="admin-panel" style="display:none;margin-top:8px">
+      <div class="section-title" style="margin-bottom:12px"><span><i class="fas fa-shield-alt" style="color:var(--purple)"></i> Painel Admin — Acessos liberados</span></div>
+      <div style="background:var(--white);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;margin-bottom:12px">
+        <p style="font-size:13px;font-weight:700;color:var(--gray-700);margin-bottom:10px">Liberar novo e-mail</p>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <input type="email" id="admin-new-email" placeholder="pessoa@email.com" style="flex:1;padding:11px 14px;border:2px solid var(--gray-100);border-radius:12px;font-family:'Nunito',sans-serif;font-size:16px;outline:none">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <select id="admin-new-plano" style="flex:1;padding:11px 14px;border:2px solid var(--gray-100);border-radius:12px;font-family:'Nunito',sans-serif;font-size:16px;outline:none;background:var(--cream)">
+            <option value="trial">🎁 Trial — 30 dias grátis</option>
+            <option value="mensal">📅 Mensal — 30 dias</option>
+            <option value="trimestral">📦 Trimestral — 90 dias</option>
+            <option value="semestral">⭐ Semestral — 180 dias</option>
+            <option value="anual">🏆 Anual — 365 dias</option>
+            <option value="vitalicio">♾️ Vitalício — sem expiração</option>
+          </select>
+          <button class="btn btn-success btn-sm" onclick="adminAddEmail()" style="white-space:nowrap;padding:11px 16px"><i class="fas fa-plus"></i> Liberar</button>
+        </div>
+        <div id="admin-email-list"><div style="text-align:center;padding:20px;color:var(--gray-300)"><i class="fas fa-spinner fa-spin"></i> Carregando...</div></div>
+      </div>
+    </div>
+
+    <p style="text-align:center;color:var(--gray-300);font-size:12px;margin-top:16px">Finanças Vida v1.3</p>
+    <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(event)">
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <div class="bottom-nav">
+    <button class="nav-item active" onclick="showPage('dashboard')" id="nav-dashboard"><i class="fas fa-home"></i><span>Início</span><div class="nav-dot"></div></button>
+    <button class="nav-item" onclick="showPage('lancamentos')" id="nav-lancamentos"><i class="fas fa-exchange-alt"></i><span>Lançamentos</span><div class="nav-dot"></div></button>
+    <button class="nav-item" onclick="showPage('contas')" id="nav-contas"><i class="fas fa-landmark"></i><span>Contas</span><div class="nav-dot"></div></button>
+    <button class="nav-item" onclick="showPage('metas')" id="nav-metas"><i class="fas fa-bullseye"></i><span>Metas</span><div class="nav-dot"></div></button>
+    <button class="nav-item" onclick="showPage('relatorios')" id="nav-relatorios"><i class="fas fa-chart-pie"></i><span>Relatórios</span><div class="nav-dot"></div></button>
+    <button class="nav-item" onclick="showPage('config')" id="nav-config"><i class="fas fa-cog"></i><span>Config</span><div class="nav-dot"></div></button>
+  </div>
+
+  <button class="fab" id="fab-btn" onclick="openAddModal()"><i class="fas fa-plus"></i></button>
+</div>
+
+<!-- ══ MODALS ══ -->
+
+<!-- Modal Lançamento -->
+<div class="modal-overlay" id="modal-lanc">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-lanc-title">💸 Novo Lançamento</div>
+    <input type="hidden" id="lanc-edit-id">
+    <div class="auth-tabs" style="margin-bottom:16px">
+      <button class="auth-tab active" id="lanc-tab-despesa" onclick="switchLancTipo('despesa')">💸 Despesa</button>
+      <button class="auth-tab" id="lanc-tab-receita" onclick="switchLancTipo('receita')">💰 Receita</button>
+      <button class="auth-tab" id="lanc-tab-transferencia" onclick="switchLancTipo('transferencia')">🔁 Transf.</button>
+    </div>
+    <input type="hidden" id="lanc-tipo" value="despesa">
+    <div class="form-group"><label>Descrição *</label><input type="text" id="lanc-desc" placeholder="Ex: Supermercado, Salário, Uber..."></div>
+    <div class="input-row">
+      <div class="form-group"><label>Valor (R$) *</label><input type="number" id="lanc-valor" placeholder="0,00" min="0" step="0.01"></div>
+      <div class="form-group"><label>Data *</label><input type="date" id="lanc-data"></div>
+    </div>
+    <div class="form-group" id="lanc-conta-wrap"><label id="lanc-conta-label">Conta *</label>
+      <select id="lanc-conta-id"></select>
+    </div>
+    <div class="form-group" id="lanc-conta-destino-wrap" style="display:none"><label>Conta de destino *</label>
+      <select id="lanc-conta-destino-id"></select>
+    </div>
+    <div class="form-group" id="lanc-categoria-wrap"><label>Categoria</label>
+      <select id="lanc-categoria-id"></select>
+    </div>
+    <div class="input-row" id="lanc-parcela-wrap">
+      <div class="form-group"><label>Repetição</label>
+        <select id="lanc-repeat">
+          <option value="none">Não repetir</option>
+          <option value="parcelado">Parcelado (divide o valor em N vezes)</option>
+          <option value="fixo_mensal">Fixo (gera N meses de uma vez)</option>
+          <option value="automatico">Automático (todo mês, sem parar — ex: salário)</option>
+        </select>
+      </div>
+      <div class="form-group" id="lanc-repeat-count-wrap" style="display:none"><label>Quantidade</label><input type="number" id="lanc-repeat-count" min="2" max="60" value="2"></div>
+    </div>
+    <div class="info-box" id="lanc-automatico-info" style="display:none"><strong>Automático:</strong> a partir da data escolhida, este lançamento se repete sozinho todo mês (no mesmo dia) — sem precisar digitar de novo. Para pausar, editar o valor ou excluir, use Configurações → Receitas e despesas automáticas.</div>
+    <div class="toggle-wrap" id="lanc-pago-wrap">
+      <label class="toggle"><input type="checkbox" id="lanc-pago" checked><span class="toggle-slider"></span></label>
+      <span class="toggle-label" id="lanc-pago-label">Já foi pago (conta a pagar fica desmarcado)</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-lanc')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveLancamento()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Conta -->
+<div class="modal-overlay" id="modal-conta">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-conta-title">🏦 Nova Conta</div>
+    <input type="hidden" id="conta-edit-id">
+    <div class="form-group"><label>Nome *</label><input type="text" id="conta-nome" placeholder="Ex: Nubank, Carteira, Poupança..."></div>
+    <div class="form-group"><label>Tipo</label>
+      <select id="conta-tipo" onchange="onContaTipoChange()">
+        <option value="corrente">🏦 Conta corrente</option>
+        <option value="poupanca">🐷 Poupança</option>
+        <option value="carteira">👛 Carteira (dinheiro)</option>
+        <option value="cartao">💳 Cartão de crédito</option>
+        <option value="investimento">📈 Investimento</option>
+      </select>
+    </div>
+    <div class="form-group"><label id="conta-saldo-label">Saldo inicial (R$)</label><input type="number" id="conta-saldo" placeholder="0,00" step="0.01"></div>
+    <div class="input-row" id="conta-cartao-wrap" style="display:none">
+      <div class="form-group"><label>Limite (R$)</label><input type="number" id="conta-limite" placeholder="0,00" min="0" step="0.01"></div>
+      <div class="form-group"><label>Dia de vencimento</label><input type="number" id="conta-vencimento" placeholder="Ex: 10" min="1" max="31"></div>
+    </div>
+    <div class="form-group"><label>Cor</label>
+      <div class="color-picker" id="conta-color-picker">
+        <div class="color-opt selected" style="background:#0B5A47" data-color="#0B5A47" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#2E86AB" data-color="#2E86AB" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#7D3C98" data-color="#7D3C98" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#C0392B" data-color="#C0392B" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#B8860B" data-color="#B8860B" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#D4860A" data-color="#D4860A" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#117A65" data-color="#117A65" onclick="selectAccountColor(this)"></div>
+        <div class="color-opt" style="background:#34495E" data-color="#34495E" onclick="selectAccountColor(this)"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-conta')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveConta()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Transferência rápida -->
+<div class="modal-overlay" id="modal-transfer">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🔁 Transferir entre contas</div>
+    <div class="form-group"><label>De *</label><select id="transfer-origem"></select></div>
+    <div class="form-group"><label>Para *</label><select id="transfer-destino"></select></div>
+    <div class="input-row">
+      <div class="form-group"><label>Valor (R$) *</label><input type="number" id="transfer-valor" placeholder="0,00" min="0" step="0.01"></div>
+      <div class="form-group"><label>Data *</label><input type="date" id="transfer-data"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-transfer')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveTransferQuick()"><i class="fas fa-check"></i> Transferir</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Meta -->
+<div class="modal-overlay" id="modal-meta">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-meta-title">🎯 Nova Meta</div>
+    <input type="hidden" id="meta-edit-id">
+    <div class="form-group"><label>Nome *</label><input type="text" id="meta-nome" placeholder="Ex: Reserva de emergência, Viagem, Carro novo..."></div>
+    <div class="input-row">
+      <div class="form-group"><label>Valor alvo (R$) *</label><input type="number" id="meta-valor-alvo" placeholder="0,00" min="0" step="0.01"></div>
+      <div class="form-group"><label>Já tenho (R$)</label><input type="number" id="meta-valor-atual" placeholder="0,00" min="0" step="0.01"></div>
+    </div>
+    <div class="form-group"><label>Prazo</label><input type="date" id="meta-prazo"></div>
+    <div class="form-group"><label>Cor</label>
+      <div class="color-picker" id="meta-color-picker">
+        <div class="color-opt selected" style="background:#7D3C98" data-color="#7D3C98" onclick="selectGoalColor(this)"></div>
+        <div class="color-opt" style="background:#0B5A47" data-color="#0B5A47" onclick="selectGoalColor(this)"></div>
+        <div class="color-opt" style="background:#2E86AB" data-color="#2E86AB" onclick="selectGoalColor(this)"></div>
+        <div class="color-opt" style="background:#B8860B" data-color="#B8860B" onclick="selectGoalColor(this)"></div>
+        <div class="color-opt" style="background:#C0392B" data-color="#C0392B" onclick="selectGoalColor(this)"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-meta')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveMeta()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Depositar em Meta -->
+<div class="modal-overlay" id="modal-meta-deposito">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title">💰 Depositar na meta</div>
+    <input type="hidden" id="deposito-meta-id">
+    <p style="font-size:14px;color:var(--gray-500);margin-bottom:16px" id="deposito-meta-info"></p>
+    <div class="form-group"><label>Valor (R$) *</label><input type="number" id="deposito-valor" placeholder="0,00" min="0" step="0.01"></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-meta-deposito')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-success" onclick="confirmDeposito()"><i class="fas fa-check"></i> Depositar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Categorias -->
+<div class="modal-overlay" id="modal-categorias">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🏷️ Categorias</div>
+    <div class="auth-tabs" style="margin-bottom:16px">
+      <button class="auth-tab active" id="cat-tab-despesa" onclick="switchCatManagerTab('despesa')">💸 Despesas</button>
+      <button class="auth-tab" id="cat-tab-receita" onclick="switchCatManagerTab('receita')">💰 Receitas</button>
+    </div>
+    <div id="categorias-manager-list"></div>
+    <button class="btn btn-success" style="width:100%;margin-top:14px" onclick="openCategoriaModal()"><i class="fas fa-plus"></i> Nova categoria</button>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeModal('modal-categorias')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Categoria (criar/editar) -->
+<div class="modal-overlay" id="modal-categoria">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-categoria-title">🏷️ Nova Categoria</div>
+    <input type="hidden" id="categoria-edit-id">
+    <input type="hidden" id="categoria-tipo" value="despesa">
+    <div class="form-group"><label>Nome *</label><input type="text" id="categoria-nome" placeholder="Ex: Pets, Academia..."></div>
+    <div class="form-group" id="categoria-orcamento-wrap"><label>Orçamento mensal padrão (R$, opcional)</label><input type="number" id="categoria-orcamento" placeholder="0,00" min="0" step="0.01"></div>
+    <div class="form-group"><label>Ícone</label>
+      <div class="icon-picker" id="categoria-icon-picker"></div>
+    </div>
+    <div class="form-group"><label>Cor</label>
+      <div class="color-picker" id="categoria-color-picker">
+        <div class="color-opt selected" style="background:#0B5A47" data-color="#0B5A47" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#2E86AB" data-color="#2E86AB" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#7D3C98" data-color="#7D3C98" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#C0392B" data-color="#C0392B" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#B8860B" data-color="#B8860B" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#D4860A" data-color="#D4860A" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#117A65" data-color="#117A65" onclick="selectCategoriaColor(this)"></div>
+        <div class="color-opt" style="background:#5D6D7E" data-color="#5D6D7E" onclick="selectCategoriaColor(this)"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-categoria')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveCategoria()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Recorrências (lista) -->
+<div class="modal-overlay" id="modal-recorrencias">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🔄 Automáticas</div>
+    <p style="font-size:13px;color:var(--gray-500);margin-bottom:14px;line-height:1.5">Cadastre aqui o que se repete todo mês — como seu salário ou uma conta fixa. Toda vez que você abrir o app, ele lança sozinho o que já venceu, sem você digitar de novo.</p>
+    <div id="recor-sugestoes"></div>
+    <div class="auth-tabs" style="margin-bottom:16px">
+      <button class="auth-tab active" id="recor-tab-receita" onclick="switchRecorManagerTab('receita')">💰 Receitas</button>
+      <button class="auth-tab" id="recor-tab-despesa" onclick="switchRecorManagerTab('despesa')">💸 Despesas</button>
+    </div>
+    <div id="recorrencias-manager-list"></div>
+    <button class="btn btn-success" style="width:100%;margin-top:14px" onclick="openRecorrenciaModal()"><i class="fas fa-plus"></i> Nova recorrência</button>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeModal('modal-recorrencias')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Recorrência (criar/editar) -->
+<div class="modal-overlay" id="modal-recorrencia">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-recorrencia-title">🔄 Nova recorrência</div>
+    <input type="hidden" id="recor-edit-id">
+    <input type="hidden" id="recor-tipo" value="receita">
+    <div class="form-group"><label>Descrição *</label><input type="text" id="recor-desc" placeholder="Ex: Salário, Aluguel, Netflix..."></div>
+    <div class="input-row">
+      <div class="form-group"><label>Valor (R$) *</label><input type="number" id="recor-valor" placeholder="0,00" min="0" step="0.01"></div>
+      <div class="form-group"><label>Dia do mês *</label><input type="number" id="recor-dia" placeholder="Ex: 5" min="1" max="31"></div>
+    </div>
+    <div class="form-group"><label>Conta *</label><select id="recor-conta-id"></select></div>
+    <div class="form-group"><label>Categoria</label><select id="recor-categoria-id"></select></div>
+    <div class="form-group"><label>Começar a partir de</label><input type="date" id="recor-data-inicio"></div>
+    <div class="toggle-wrap">
+      <label class="toggle"><input type="checkbox" id="recor-ativa" checked><span class="toggle-slider"></span></label>
+      <span class="toggle-label">Ativa (continuar gerando todo mês)</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="closeModal('modal-recorrencia')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-primary" onclick="saveRecorrencia()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Ajustar orçamento do mês por categoria (zero-based budget) -->
+<div class="modal-overlay" id="modal-alocacao">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-alocacao-title">💰 Ajustar orçamento</div>
+    <input type="hidden" id="alocacao-categoria-id">
+    <input type="hidden" id="alocacao-ym">
+    <p style="font-size:13px;color:var(--gray-500);margin-bottom:14px;line-height:1.5" id="alocacao-info"></p>
+    <div class="form-group"><label>Quanto alocar nesta categoria neste mês (R$)</label><input type="number" id="alocacao-valor" placeholder="0,00" min="0" step="0.01"></div>
+    <div class="modal-actions">
+      <button class="btn" style="background:var(--gray-100);color:var(--gray-700)" onclick="usarValorPadraoAlocacao()"><i class="fas fa-rotate-left"></i> Usar o orçamento padrão</button>
+      <button class="btn btn-primary" onclick="salvarAlocacao()"><i class="fas fa-save"></i> Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Ver parcelas de um parcelamento -->
+<div class="modal-overlay" id="modal-parcelas">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="modal-parcelas-title">🧾 Parcelas</div>
+    <div id="parcelas-list"></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="confirmDeleteParcelamentoFromModal()"><i class="fas fa-trash"></i> Excluir tudo</button>
+      <button class="btn btn-primary" onclick="closeModal('modal-parcelas')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Excluir -->
+<div class="modal-overlay" id="modal-delete">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" style="color:var(--rose)">⚠️ Confirmar exclusão</div>
+    <div class="delete-warning">
+      <strong>Esta ação não pode ser desfeita!</strong>
+      <p id="delete-desc"></p>
+    </div>
+    <div class="form-group">
+      <label>Digite <strong>REMOVER</strong> para confirmar</label>
+      <input type="text" id="delete-confirm-input" placeholder="REMOVER" oninput="checkDeleteInput(this)">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" style="background:var(--gray-100);color:var(--gray-700)" onclick="closeModal('modal-delete')"><i class="fas fa-times"></i> Cancelar</button>
+      <button class="btn btn-danger" id="btn-confirm-delete" disabled onclick="executeDelete()"><i class="fas fa-trash"></i> Excluir</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ════ STATE ════
+let currentUser = null;
+let selectedAccountColor = '#0B5A47';
+let selectedGoalColor = '#7D3C98';
+let selectedCategoriaColor = '#0B5A47';
+let selectedCategoriaIcon = 'ellipsis-h';
+let deleteTarget = null;
+let chartEvolucao=null, chartCategorias=null, chartRelBarra=null, chartRelPizza=null, chartProjecao=null;
+let currentLancFilter = 'todos';
+let currentLancSearch = '';
+let currentLancMes = '';
+let currentDashYm = '';
+let currentOrcamentoYm = '';
+let currentRelPeriodo = '6m';
+let currentCatManagerTab = 'despesa';
+let deferredInstallPrompt = null;
+
+const CATEGORIA_ICONS = ['home','utensils','car','heartbeat','graduation-cap','gamepad','shopping-bag','sync','file-invoice-dollar','briefcase','laptop-code','chart-line','coins','paw','plane','gift','tshirt','mobile-alt','gas-pump','ellipsis-h'];
+
+// ════ DB (Firestore) ════
+let _dbCache = null;
+function defaultDB(){
+  return {
+    perfil:{nome:'',moeda:'BRL'},
+    contas:[],
+    categorias: defaultCategorias(),
+    transacoes:[],
+    metas:[],
+    recorrencias:[],
+    orcamentosMensais:{},
+    assinaturasIgnoradas:[],
+    config:{notifDiasAntecedencia:3}
+  };
+}
+function defaultCategorias(){
+  const desp=[
+    ['Moradia','home','#1B4F72'],['Alimentação','utensils','#D4860A'],['Transporte','car','#7D3C98'],
+    ['Saúde','heartbeat','#C0392B'],['Educação','graduation-cap','#2E86AB'],['Lazer','gamepad','#1A9B60'],
+    ['Compras','shopping-bag','#B8860B'],['Assinaturas','sync','#5D6D7E'],['Contas fixas','file-invoice-dollar','#C0392B'],
+    ['Outros','ellipsis-h','#7F8C8D']
+  ];
+  const rec=[
+    ['Salário','briefcase','#1A9B60'],['Freelance','laptop-code','#2E86AB'],['Investimentos','chart-line','#B8860B'],['Outros','coins','#7F8C8D']
+  ];
+  const out=[];
+  desp.forEach(([nome,icone,cor])=>out.push({id:uid(),nome,icone,cor,tipo:'despesa',orcamento:0}));
+  rec.forEach(([nome,icone,cor])=>out.push({id:uid(),nome,icone,cor,tipo:'receita',orcamento:0}));
+  return out;
+}
+function getDBSync(){ return _dbCache || defaultDB(); }
+async function getDB(){
+  if(_dbCache) return _dbCache;
+  try{
+    const {doc,getDoc}=window._fbFns;
+    const ref=doc(window._fbDb,'users',window.currentUser.uid);
+    const snap=await getDoc(ref);
+    const def=defaultDB();
+    if(!snap.exists()){ _dbCache=def; return def; }
+    const d=snap.data();
+    if(!d.contas) d.contas=[];
+    if(!d.categorias||!d.categorias.length) d.categorias=defaultCategorias();
+    if(!d.transacoes) d.transacoes=[];
+    if(!d.metas) d.metas=[];
+    if(!d.recorrencias) d.recorrencias=[];
+    if(!d.orcamentosMensais) d.orcamentosMensais={};
+    if(!d.assinaturasIgnoradas) d.assinaturasIgnoradas=[];
+    if(!d.config) d.config={notifDiasAntecedencia:3};
+    if(!d.perfil) d.perfil={nome:'',moeda:'BRL'};
+    _dbCache=d;
+    return d;
+  } catch(err){
+    console.error('Erro ao carregar dados:', err);
+    showToast('⚠️ Erro ao carregar dados. Verifique sua conexão.','error');
+    return defaultDB();
+  }
+}
+async function saveDB(db){
+  _dbCache=db;
+  const {doc,setDoc}=window._fbFns;
+  const ref=doc(window._fbDb,'users',window.currentUser.uid);
+  try{
+    await setDoc(ref,db);
+  } catch(err){
+    console.error('Erro ao salvar:', err);
+    showToast('⚠️ Erro ao salvar. Verifique sua conexão.','error');
+    throw err;
+  }
+}
+window._ensureUserData = async function(uid){
+  _dbCache = null;
+  const resolvedUid = uid || (window.currentUser && window.currentUser.uid);
+  if(!resolvedUid) return;
+  const {doc, getDoc, setDoc} = window._fbFns;
+  const ref = doc(window._fbDb, 'users', resolvedUid);
+  const snap = await getDoc(ref);
+  if(!snap.exists()){
+    await setDoc(ref, defaultDB());
+  } else {
+    const d = snap.data();
+    if(!d.contas) d.contas=[];
+    if(!d.categorias||!d.categorias.length) d.categorias=defaultCategorias();
+    if(!d.transacoes) d.transacoes=[];
+    if(!d.metas) d.metas=[];
+    if(!d.recorrencias) d.recorrencias=[];
+    if(!d.orcamentosMensais) d.orcamentosMensais={};
+    if(!d.assinaturasIgnoradas) d.assinaturasIgnoradas=[];
+    if(!d.config) d.config={notifDiasAntecedencia:3};
+    if(!d.perfil) d.perfil={nome:'',moeda:'BRL'};
+    _dbCache = d;
+  }
+};
+
+function showErrorScreen(){
+  ['app-screen','auth-screen','setup-screen'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display='none'; });
+  const err=document.getElementById('error-screen');
+  if(err) err.style.display='flex';
+}
+window.showErrorScreen = showErrorScreen;
+function tentarNovamente(){ document.getElementById('error-screen').style.display='none'; window.location.reload(); }
+
+// ════ HELPERS ════
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+function localToday(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Só para texto livre (descrições, nomes) usado como ARGUMENTO dentro de onclick="fn('...')".
+// O navegador decodifica entidades HTML do atributo ANTES de rodar como JS, então um simples
+// esc() (que vira &#39;) volta a virar aspa de verdade e quebra a string do JS se o texto tiver
+// um apóstrofo (ex.: "McDonald's"). Aqui escapamos primeiro pro JS (\' e \\), só depois pro HTML.
+function escJsAttr(s){
+  const jsEscaped=String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,'\\n');
+  return jsEscaped.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtDate(d){ if(!d) return ''; return new Date(d+'T12:00:00').toLocaleDateString('pt-BR'); }
+function fmtMoney(v){ const n=Number(v||0); const sign=n<0?'-':''; return sign+'R$ '+Math.abs(n).toFixed(2).replace('.',','); }
+function monthKey(dateStr){ return dateStr.slice(0,7); }
+function addMonths(dateStr,n){ const d=new Date(dateStr+'T12:00:00'); d.setMonth(d.getMonth()+n); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function daysInMonth(y,m){ return new Date(y,m,0).getDate(); } // m é 1-based
+function diaClampado(ym,dia){ const [y,m]=ym.split('-').map(Number); return Math.min(Math.max(dia,1),daysInMonth(y,m)); }
+function dateForYm(ym,dia){ const [y,m]=ym.split('-').map(Number); return `${y}-${String(m).padStart(2,'0')}-${String(diaClampado(ym,dia)).padStart(2,'0')}`; }
+function shiftYm(ym,n){ const [y,m]=ym.split('-').map(Number); const d=new Date(y,m-1+n,1); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function nextYm(ym){ return shiftYm(ym,1); }
+function fmtMesAno(ym){ const [y,m]=ym.split('-').map(Number); const label=new Date(y,m-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); return label.charAt(0).toUpperCase()+label.slice(1); }
+
+// ════ CÁLCULOS FINANCEIROS ════
+function accountBalance(contaId, db, ateData){
+  const conta=db.contas.find(c=>c.id===contaId);
+  let saldo=conta?(conta.saldoInicial||0):0;
+  db.transacoes.forEach(t=>{
+    if(t.pago===false) return;
+    if(ateData && t.data>ateData) return;
+    if(t.tipo==='receita' && t.contaId===contaId) saldo+=t.valor;
+    else if(t.tipo==='despesa' && t.contaId===contaId) saldo-=t.valor;
+    else if(t.tipo==='transferencia'){
+      if(t.contaId===contaId) saldo-=t.valor;
+      if(t.contaDestinoId===contaId) saldo+=t.valor;
+    }
+  });
+  return saldo;
+}
+function netWorth(db, ateData){
+  return db.contas.filter(c=>!c.arquivada).reduce((s,c)=>s+accountBalance(c.id,db,ateData),0);
+}
+function monthTotals(db, ym){
+  const receita=db.transacoes.filter(t=>t.tipo==='receita'&&monthKey(t.data)===ym).reduce((s,t)=>s+t.valor,0);
+  const despesa=db.transacoes.filter(t=>t.tipo==='despesa'&&monthKey(t.data)===ym).reduce((s,t)=>s+t.valor,0);
+  return {receita,despesa,saldo:receita-despesa};
+}
+function getCategoria(db,id){ return db.categorias.find(c=>c.id===id); }
+function getConta(db,id){ return db.contas.find(c=>c.id===id); }
+
+// ════ ORÇAMENTO MENSAL "ZERO-BASED" (cada real tem um destino, com saldo que rola pro mês seguinte) ════
+// Cada categoria de despesa tem um valor padrão alocado (o campo "orcamento" que
+// já existia). db.orcamentosMensais guarda só as EXCEÇÕES: quando um mês específico
+// aloca um valor diferente do padrão da categoria. O saldo de cada categoria (o
+// que sobrou ou faltou) acumula mês a mês, em vez de resetar a zero sempre.
+function alocacaoCategoriaMes(db,categoriaId,ym){
+  const overrides=db.orcamentosMensais&&db.orcamentosMensais[ym];
+  if(overrides && Object.prototype.hasOwnProperty.call(overrides,categoriaId)) return overrides[categoriaId];
+  const cat=getCategoria(db,categoriaId);
+  return cat?(cat.orcamento||0):0;
+}
+function gastoCategoriaMes(db,categoriaId,ym){
+  return db.transacoes.filter(t=>t.tipo==='despesa'&&t.categoriaId===categoriaId&&monthKey(t.data)===ym).reduce((s,t)=>s+t.valor,0);
+}
+function primeiroMesComDados(db){
+  if(!db.transacoes.length) return null;
+  return db.transacoes.reduce((min,t)=>{ const ym=monthKey(t.data); return (!min||ym<min)?ym:min; }, null);
+}
+// Saldo acumulado da categoria até (e incluindo) o mês ymAlvo: soma de (alocado - gasto) de cada mês desde o primeiro lançamento registrado.
+function saldoAcumuladoCategoria(db,categoriaId,ymAlvo){
+  let ym=primeiroMesComDados(db)||ymAlvo;
+  if(ym>ymAlvo) ym=ymAlvo;
+  let saldo=0, iter=0;
+  while(ym<=ymAlvo && iter<240){
+    saldo += alocacaoCategoriaMes(db,categoriaId,ym) - gastoCategoriaMes(db,categoriaId,ym);
+    ym=nextYm(ym); iter++;
+  }
+  return saldo;
+}
+// "Não alocado" do mês: receita do mês menos o que foi alocado nas categorias de despesa nesse mês.
+function naoAlocadoMes(db,ym){
+  const {receita}=monthTotals(db,ym);
+  const totalAlocado=db.categorias.filter(c=>c.tipo==='despesa').reduce((s,c)=>s+alocacaoCategoriaMes(db,c.id,ym),0);
+  return receita-totalAlocado;
+}
+
+// ════ RECORRÊNCIAS AUTOMÁTICAS (salário, contas fixas...) ════
+// Roda toda vez que o app abre (e quando a aba volta a ficar visível). Para cada
+// regra ativa, gera os lançamentos dos meses que já passaram (e o do mês atual,
+// só depois que o dia chegar) — sem duplicar, graças ao "recorrenciaId" + mês.
+function gerarOcorrenciaRecorrencia(db,r,ym){
+  const jaExiste=db.transacoes.some(t=>t.recorrenciaId===r.id && t.data.slice(0,7)===ym);
+  if(jaExiste) return false;
+  db.transacoes.push({
+    id:uid(), tipo:r.tipo, desc:r.desc, valor:r.valor, data:dateForYm(ym,r.diaDoMes),
+    contaId:r.contaId, contaDestinoId:null, categoriaId:r.categoriaId||null,
+    pago:true, recorrenciaId:r.id, createdAt:new Date().toISOString()
+  });
+  return true;
+}
+function processRecorrencias(db){
+  if(!db.recorrencias) db.recorrencias=[];
+  const hoje=localToday();
+  const hojeYm=hoje.slice(0,7);
+  const hojeDia=parseInt(hoje.slice(8,10),10);
+  let changed=false;
+  db.recorrencias.forEach(r=>{
+    if(!r.ativa || !r.contaId || !r.diaDoMes) return;
+    let ym=r.ultimoMesGerado?nextYm(r.ultimoMesGerado):(r.dataInicio?r.dataInicio.slice(0,7):hojeYm);
+    let iter=0;
+    while(ym<hojeYm && iter<48){
+      iter++;
+      if(gerarOcorrenciaRecorrencia(db,r,ym)) changed=true;
+      r.ultimoMesGerado=ym;
+      ym=nextYm(ym);
+    }
+    if(ym===hojeYm && hojeDia>=diaClampado(ym,r.diaDoMes)){
+      if(gerarOcorrenciaRecorrencia(db,r,ym)) changed=true;
+      r.ultimoMesGerado=ym;
+    }
+  });
+  return changed;
+}
+
+// ════ CONFIGURAÇÃO DO FIREBASE (tela inicial) ════
+// Mesma config "de fábrica" do bloco module acima (duplicada aqui porque este
+// trecho roda no script clássico, sem import/export). Serve de fallback: quem
+// abre o link sem nunca ter mexido nisso cai direto no login. O botão
+// "Reconfigurar Firebase" seta financas_force_setup para forçar a tela de
+// configuração mesmo sem um override salvo (senão o fallback abaixo faria a
+// tela de setup nunca aparecer de novo).
+const BAKED_FIREBASE_CONFIG_LOCAL = {
+  apiKey: "AIzaSyD9CsAJqmUSdzL3kr-tCtSjEDjoyno8f4Y",
+  authDomain: "finaceiro-claude-plus.firebaseapp.com",
+  projectId: "finaceiro-claude-plus",
+  storageBucket: "finaceiro-claude-plus.firebasestorage.app",
+  messagingSenderId: "672339391600",
+  appId: "1:672339391600:web:494078704c1b233eb630b5",
+  measurementId: "G-75SXMBQ105"
+};
+function getStoredFirebaseConfigLocal(){
+  try{
+    if(localStorage.getItem('financas_force_setup')) return null;
+    const raw=localStorage.getItem('financas_firebase_config');
+    if(!raw) return BAKED_FIREBASE_CONFIG_LOCAL;
+    const cfg=JSON.parse(raw);
+    if(cfg&&cfg.apiKey&&cfg.projectId&&cfg.appId) return cfg;
+  } catch(e){}
+  return BAKED_FIREBASE_CONFIG_LOCAL;
+}
+(function initialScreenGate(){
+  if(!getStoredFirebaseConfigLocal()){
+    const setupEl=document.getElementById('setup-screen');
+    const authEl=document.getElementById('auth-screen');
+    if(setupEl) setupEl.style.display='flex';
+    if(authEl) authEl.style.display='none';
+  }
+})();
+function parseFirebaseConfigInput(text){
+  const match=text.match(/\{[\s\S]*\}/);
+  if(!match) throw new Error('Não encontrei um objeto de configuração no texto colado.');
+  let obj;
+  try{ obj=Function('"use strict"; return ('+match[0]+')')(); }
+  catch(e){ throw new Error('Não consegui ler esse formato. Cole o bloco exatamente como o Firebase mostrou.'); }
+  if(!obj||typeof obj!=='object') throw new Error('Formato inválido.');
+  const required=['apiKey','authDomain','projectId','appId'];
+  for(const k of required){ if(!obj[k]) throw new Error('Faltando o campo "'+k+'" na configuração.'); }
+  return obj;
+}
+function saveFirebaseConfigFromInput(){
+  const text=document.getElementById('setup-config-input').value;
+  const statusEl=document.getElementById('setup-status');
+  try{
+    const cfg=parseFirebaseConfigInput(text);
+    localStorage.setItem('financas_firebase_config', JSON.stringify(cfg));
+    localStorage.removeItem('financas_force_setup');
+    statusEl.style.color='var(--mint)';
+    statusEl.textContent='Configuração salva! Recarregando...';
+    setTimeout(()=>location.reload(), 700);
+  } catch(e){
+    statusEl.style.color='var(--rose)';
+    statusEl.textContent='Erro: '+e.message;
+  }
+}
+function reopenSetupScreen(){
+  if(!confirm('Isso vai desconectar o app do Firebase atual neste dispositivo. Você poderá colar a configuração de outro projeto em seguida (ou cancelar e continuar usando o padrão). Continuar?')) return;
+  localStorage.removeItem('financas_firebase_config');
+  localStorage.setItem('financas_force_setup', '1');
+  location.reload();
+}
+
+// ════ PWA: instalação, modo escuro e status de conexão ════
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const item = document.getElementById('install-app-item');
+  if(item) item.style.display = 'flex';
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  const item = document.getElementById('install-app-item');
+  if(item) item.style.display = 'none';
+  showToast('App instalado! 🎉', 'success');
+});
+async function installApp(){
+  if(!deferredInstallPrompt){ showToast('Use o menu do navegador (⋮) → "Instalar app" / "Adicionar à tela inicial"', ''); return; }
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+}
+function applyDarkModePref(){
+  const on = localStorage.getItem('financas_dark') === '1';
+  document.body.classList.toggle('dark', on);
+  const t = document.getElementById('dark-mode-toggle');
+  if(t) t.checked = on;
+}
+function toggleDarkMode(on){
+  document.body.classList.toggle('dark', on);
+  localStorage.setItem('financas_dark', on ? '1' : '0');
+  if(document.getElementById('page-dashboard').classList.contains('active')) renderDashboard();
+  if(document.getElementById('page-relatorios').classList.contains('active')) renderRelatorios();
+}
+function updateConnectionUI(){
+  const online = navigator.onLine;
+  const banner = document.getElementById('offline-banner');
+  if(banner){ banner.classList.toggle('show', !online); document.body.classList.toggle('has-offline-banner', !online); }
+  const icon = document.getElementById('sync-status-icon');
+  const title = document.getElementById('sync-status-title');
+  const sub = document.getElementById('sync-status-sub');
+  if(icon && title && sub){
+    if(online){
+      icon.style.background='var(--mint-pale)'; icon.style.color='var(--mint)'; icon.innerHTML='<i class="fas fa-check"></i>';
+      title.textContent='Conectado'; sub.textContent='Dados sincronizados na nuvem';
+    } else {
+      icon.style.background='var(--amber-pale)'; icon.style.color='var(--amber)'; icon.innerHTML='<i class="fas fa-cloud"></i>';
+      title.textContent='Offline'; sub.textContent='Continuando a funcionar — sincroniza ao reconectar';
+    }
+  }
+}
+window.addEventListener('online', () => { updateConnectionUI(); showToast('Conexão restabelecida — sincronizando... 🔄','success'); });
+window.addEventListener('offline', () => { updateConnectionUI(); showToast('Você está offline — os dados serão sincronizados depois 📡','warning'); });
+
+// Se o app ficar aberto (ou minimizado) até passar da meia-noite, reconfere as
+// recorrências automáticas ao voltar o foco, sem precisar fechar e reabrir.
+document.addEventListener('visibilitychange', async () => {
+  if(document.visibilityState==='visible' && window.currentUser && _dbCache){
+    try{
+      const db=getDBSync();
+      if(processRecorrencias(db)){ await saveDB(db); refreshAll(); }
+    } catch(e){}
+  }
+});
+
+// ════ Notificações do navegador ════
+function applyPushNotifPref(){
+  const t=document.getElementById('push-notif-toggle'); if(!t) return;
+  const wanted=localStorage.getItem('financas_push')==='1';
+  t.checked=wanted && 'Notification' in window && Notification.permission==='granted';
+  const status=document.getElementById('notif-perm-status');
+  if(status){
+    if(!('Notification' in window)) status.textContent='Não suportado neste navegador';
+    else if(Notification.permission==='denied') status.textContent='Bloqueado nas permissões do navegador';
+    else status.textContent='Avisar sobre contas a vencer';
+  }
+}
+async function togglePushNotifications(on){
+  if(!('Notification' in window)){ showToast('Notificações não suportadas neste navegador','error'); document.getElementById('push-notif-toggle').checked=false; return; }
+  if(!on){ localStorage.setItem('financas_push','0'); return; }
+  const perm=await Notification.requestPermission();
+  if(perm!=='granted'){ document.getElementById('push-notif-toggle').checked=false; showToast('Permissão de notificação negada','error'); applyPushNotifPref(); return; }
+  localStorage.setItem('financas_push','1');
+  showToast('Notificações ativadas! 🔔','success');
+  checkPushNotifications(true);
+}
+function checkPushNotifications(force){
+  if(!('Notification' in window)||Notification.permission!=='granted') return;
+  if(localStorage.getItem('financas_push')!=='1') return;
+  const today=localToday();
+  const last=localStorage.getItem('financas_push_last');
+  if(!force && last===today) return;
+  const alerts=computeAlerts(getDBSync());
+  if(alerts.length){
+    try{ new Notification('💰 Finanças Vida', { body: alerts.slice(0,3).map(a=>a.titulo).join(' • '), icon:'./icon-192.png' }); }
+    catch(e){}
+  }
+  localStorage.setItem('financas_push_last', today);
+}
+
+// Aplica preferências salvas assim que este script existe (mesmo antes do login)
+applyDarkModePref();
+updateConnectionUI();
+
+// ════ AUTH ════
+function switchAuthTab(tab,el){
+  document.querySelectorAll('.auth-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('forgot-form').style.display='none';
+  document.getElementById('login-form').style.display=tab==='login'?'block':'none';
+  document.getElementById('register-form').style.display=tab==='register'?'block':'none';
+}
+async function doLogin(){
+  if(!window._fbAuth){ showToast('Configure o Firebase primeiro','error'); return; }
+  const email=document.getElementById('login-email').value.trim();
+  const pass=document.getElementById('login-pass').value;
+  if(!email||!pass){ showToast('Preencha e-mail e senha','error'); return; }
+  try{
+    setAuthLoading(true);
+    await window._fbFns.signInWithEmailAndPassword(window._fbAuth, email, pass);
+  } catch(err){
+    setAuthLoading(false);
+    if(err.code==='auth/user-not-found'||err.code==='auth/wrong-password'||err.code==='auth/invalid-credential') showToast('E-mail ou senha incorretos','error');
+    else if(err.code==='auth/too-many-requests') showToast('Muitas tentativas. Aguarde um momento.','warning');
+    else if(err.code==='auth/unauthorized-domain') showToast('Este domínio não está autorizado no Firebase Auth (adicione em Authentication → Settings → Authorized domains)','error');
+    else showToast('Erro ao entrar: '+err.message,'error');
+  }
+}
+async function doRegister(){
+  if(!window._fbAuth){ showToast('Configure o Firebase primeiro','error'); return; }
+  const nome=document.getElementById('reg-nome').value.trim();
+  const email=document.getElementById('reg-email').value.trim();
+  const pass=document.getElementById('reg-pass').value;
+  if(!nome||!email||!pass){ showToast('Preencha todos os campos','error'); return; }
+  if(pass.length<6){ showToast('Senha com mínimo 6 caracteres','error'); return; }
+  try{
+    setAuthLoading(true);
+    // Não dá pra checar allowed_emails aqui: o usuário ainda não está autenticado,
+    // e a regra do Firestore exige auth para ler essa coleção (é assim de propósito,
+    // pra não expor a lista de e-mails liberados a qualquer visitante). A conta é
+    // criada normalmente e o gate real acontece logo em seguida, no checkLicense()
+    // (dentro do onAuthStateChanged): se o e-mail não estiver liberado, a pessoa é
+    // deslogada na hora e nunca chega a ver os dados do app.
+    const cred=await window._fbFns.createUserWithEmailAndPassword(window._fbAuth, email, pass);
+    await window._fbFns.updateProfile(cred.user, {displayName: nome});
+  } catch(err){
+    setAuthLoading(false);
+    if(err.code==='auth/email-already-in-use') showToast('E-mail já cadastrado','error');
+    else if(err.code==='auth/invalid-email') showToast('E-mail inválido','error');
+    else if(err.code==='auth/unauthorized-domain') showToast('Este domínio não está autorizado no Firebase Auth (adicione em Authentication → Settings → Authorized domains)','error');
+    else showToast('Erro ao cadastrar: '+err.message,'error');
+  }
+}
+async function doLogout(){
+  const expiredEl=document.getElementById('expired-screen'); if(expiredEl) expiredEl.style.display='none';
+  await window._fbFns.signOut(window._fbAuth);
+  _dbCache=null;
+  showToast('Até logo! 👋');
+}
+function showForgotPassword(show=true){
+  document.getElementById('login-form').style.display=show?'none':'block';
+  document.getElementById('forgot-form').style.display=show?'block':'none';
+  if(show) document.getElementById('forgot-email').value=document.getElementById('login-email').value||'';
+}
+async function doResetPassword(){
+  const email=document.getElementById('forgot-email').value.trim();
+  if(!email){ showToast('Informe o e-mail cadastrado','error'); return; }
+  try{
+    await window._fbFns.sendPasswordResetEmail(window._fbAuth, email);
+    showToast('E-mail de recuperação enviado! 📧','success');
+    showForgotPassword(false);
+  } catch(err){
+    if(err.code==='auth/user-not-found'||err.code==='auth/invalid-credential') showToast('E-mail não encontrado','error');
+    else showToast('Erro ao enviar e-mail','error');
+  }
+}
+function setAuthLoading(on){
+  document.querySelectorAll('#auth-screen .btn-primary').forEach(b=>{ b.disabled=on; });
+}
+
+// ════ APP / NAV ════
+async function showApp(){
+  document.getElementById('setup-screen').style.display='none';
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('app-screen').style.display='block';
+  const init=window.currentUser.name.charAt(0).toUpperCase();
+  ['topbar-avatar','config-avatar'].forEach(id=>document.getElementById(id).textContent=init);
+  document.getElementById('topbar-name').textContent='Finanças Vida';
+  document.getElementById('config-name').textContent=window.currentUser.name;
+  document.getElementById('config-email').textContent=window.currentUser.email;
+  const db=await getDB();
+  if(processRecorrencias(db)){
+    try{ await saveDB(db); } catch(e){ console.error('Erro ao gerar recorrências automáticas:', e); }
+  }
+  const days=['Domingo','Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado'];
+  const today=new Date();
+  document.getElementById('dash-date').textContent=`${days[today.getDay()]}, ${today.toLocaleDateString('pt-BR',{day:'2-digit',month:'long',year:'numeric'})}`;
+  const h=today.getHours();
+  const saud=h<12?'Bom dia':h<18?'Boa tarde':'Boa noite';
+  document.getElementById('dash-greeting').textContent=`${saud}, ${esc(window.currentUser.name.split(' ')[0])}! 👋`;
+  document.getElementById('lanc-data')?.setAttribute('value',localToday());
+  showPage('dashboard');
+  checkNotifications();
+  applyPushNotifPref();
+  checkPushNotifications(false);
+  if(!db.contas.length) showToast('Bem-vindo! Comece cadastrando sua primeira conta 🏦','');
+}
+window.showApp = showApp;
+
+function showPage(page){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+  const navEl=document.getElementById('nav-'+page);
+  if(navEl) navEl.classList.add('active');
+  const fabPages=['dashboard','lancamentos','contas','metas'];
+  document.getElementById('fab-btn').style.display=fabPages.includes(page)?'flex':'none';
+  if(page==='dashboard') renderDashboard();
+  if(page==='lancamentos') renderLancamentos();
+  if(page==='contas') renderContas();
+  if(page==='metas') renderMetas();
+  if(page==='relatorios') renderRelatorios();
+  if(page==='notificacoes') renderNotificacoes();
+  if(page==='config') { applyDarkModePref(); applyPushNotifPref(); if(deferredInstallPrompt) document.getElementById('install-app-item').style.display='flex'; loadAdminPanel(); }
+}
+function openAddModal(){
+  const active=document.querySelector('.page.active');
+  if(active.id==='page-contas') return openContaModal();
+  if(active.id==='page-metas') return openMetaModal();
+  openLancModal();
+}
+
+// ════ MODAL HELPERS ════
+function openModal(id){ document.getElementById(id).classList.add('active'); }
+function closeModal(id){ document.getElementById(id).classList.remove('active'); }
+document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',function(e){ if(e.target===this) closeModal(this.id); }));
+
+// ════ TOAST ════
+function showToast(msg,type=''){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='show'+(type?' '+type:'');
+  setTimeout(()=>t.className='',3400);
+}
+
+// ════ ALERTAS (usados no Dashboard, Notificações e push) ════
+function computeAlerts(db){
+  const alerts=[];
+  const hoje=localToday();
+  const limite=new Date(); limite.setDate(limite.getDate()+((db.config&&db.config.notifDiasAntecedencia)||3));
+  const limiteStr=limite.getFullYear()+'-'+String(limite.getMonth()+1).padStart(2,'0')+'-'+String(limite.getDate()).padStart(2,'0');
+  // contas a pagar/receber vencendo
+  db.transacoes.filter(t=>t.pago===false && t.tipo!=='transferencia' && t.data<=limiteStr).forEach(t=>{
+    const atrasado=t.data<hoje;
+    const cat=getCategoria(db,t.categoriaId);
+    alerts.push({
+      tipo: atrasado?'urgent':'warning',
+      icone: t.tipo==='receita'?'💰':'💸',
+      titulo: `${atrasado?'Atrasado':'Vence em breve'}: ${t.desc}`,
+      texto: `${fmtMoney(t.valor)} • ${fmtDate(t.data)}${cat?' • '+cat.nome:''}`,
+      acao:{label:'Marcar como pago',fn:`marcarPago('${t.id}')`}
+    });
+  });
+  // orçamento estourado (usa a alocação do mês — o padrão da categoria, ou o valor ajustado manualmente naquele mês)
+  const mesAtual=hoje.slice(0,7);
+  db.categorias.filter(c=>c.tipo==='despesa').forEach(c=>{
+    const alocado=alocacaoCategoriaMes(db,c.id,mesAtual);
+    if(!alocado||alocado<=0) return;
+    const gasto=gastoCategoriaMes(db,c.id,mesAtual);
+    const pct=gasto/alocado*100;
+    if(pct>=100) alerts.push({tipo:'urgent',icone:'🚨',titulo:`Orçamento de ${c.nome} estourado`,texto:`${fmtMoney(gasto)} de ${fmtMoney(alocado)} (${pct.toFixed(0)}%)`});
+    else if(pct>=90) alerts.push({tipo:'warning',icone:'⚠️',titulo:`Orçamento de ${c.nome} quase no limite`,texto:`${fmtMoney(gasto)} de ${fmtMoney(alocado)} (${pct.toFixed(0)}%)`});
+  });
+  // cartão de crédito perto do limite
+  db.contas.filter(c=>c.tipo==='cartao'&&!c.arquivada&&c.limite>0).forEach(c=>{
+    const saldo=accountBalance(c.id,db);
+    const usado=Math.max(0,-saldo);
+    const pct=usado/c.limite*100;
+    if(pct>=90) alerts.push({tipo:pct>=100?'urgent':'warning',icone:'💳',titulo:`Cartão ${c.nome} perto do limite`,texto:`Usado ${fmtMoney(usado)} de ${fmtMoney(c.limite)} (${pct.toFixed(0)}%)`});
+  });
+  // metas concluídas
+  db.metas.filter(m=>!m.concluida&&m.valorAtual>=m.valorAlvo).forEach(m=>{
+    alerts.push({tipo:'success',icone:'🎉',titulo:`Meta "${m.nome}" atingida!`,texto:`Você já tem ${fmtMoney(m.valorAtual)} — parabéns!`,acao:{label:'Ver meta',fn:`showPage('metas')`}});
+  });
+  return alerts;
+}
+async function marcarPago(id){
+  const db=await getDB();
+  const t=db.transacoes.find(x=>x.id===id); if(!t) return;
+  t.pago=true;
+  await saveDB(db); refreshAll();
+  showToast('Marcado como pago ✅','success');
+}
+
+// ════ DASHBOARD ════
+// Pequeno indicador "▲12% vs mês anterior" usado nos cards de receita/despesa.
+// positivoEBom: true para receita (subir é bom), false para despesa (subir é ruim).
+function trendHTML(atual,anterior,positivoEBom){
+  if(anterior<=0){
+    if(atual<=0) return '';
+    return '<br><span style="font-size:11px;font-weight:800;color:var(--gray-500)">novo no mês</span>';
+  }
+  const pct=((atual-anterior)/anterior)*100;
+  if(Math.abs(pct)<1) return '<br><span style="font-size:11px;font-weight:700;color:var(--gray-500)">≈ igual ao mês ant.</span>';
+  const subiu=pct>0;
+  const bom=positivoEBom?subiu:!subiu;
+  const cor=bom?'var(--mint)':'var(--rose)';
+  const seta=subiu?'▲':'▼';
+  return `<br><span style="font-size:11px;font-weight:800;color:${cor}">${seta} ${Math.abs(pct).toFixed(0)}% vs mês ant.</span>`;
+}
+function renderDashboard(){
+  const db=getDBSync();
+  const hoje=localToday();
+  const hojeYm=hoje.slice(0,7);
+  if(!currentDashYm) currentDashYm=hojeYm;
+  const ym=currentDashYm;
+  const nw=netWorth(db);
+  document.getElementById('dash-networth').textContent=fmtMoney(nw);
+  document.getElementById('dash-networth-sub').textContent=db.contas.length?`${db.contas.filter(c=>!c.arquivada).length} conta(s) ativa(s)`:'Cadastre sua primeira conta para começar';
+  document.getElementById('dash-mes-label').textContent=fmtMesAno(ym);
+  document.getElementById('dash-mes-hoje').style.display=ym===hojeYm?'none':'block';
+  const {receita,despesa,saldo}=monthTotals(db,ym);
+  const anterior=monthTotals(db,shiftYm(ym,-1));
+  const pendentesLista=db.transacoes.filter(t=>t.pago===false);
+  const pendentesValor=pendentesLista.reduce((s,t)=>s+t.valor,0);
+  document.getElementById('dash-stats').innerHTML=`
+    <div class="stat-card mint"><div class="stat-icon">💰</div><div class="stat-val">${fmtMoney(receita)}</div><div class="stat-label">Receitas do mês${trendHTML(receita,anterior.receita,true)}</div></div>
+    <div class="stat-card rose"><div class="stat-icon">💸</div><div class="stat-val">${fmtMoney(despesa)}</div><div class="stat-label">Despesas do mês${trendHTML(despesa,anterior.despesa,false)}</div></div>
+    <div class="stat-card emerald"><div class="stat-icon">📊</div><div class="stat-val" style="color:${saldo>=0?'var(--mint)':'var(--rose)'}">${fmtMoney(saldo)}</div><div class="stat-label">Saldo do mês</div></div>
+    <div class="stat-card gold"><div class="stat-icon">⏳</div><div class="stat-val">${pendentesLista.length}</div><div class="stat-label">Pendente(s)${pendentesLista.length?'<br>'+fmtMoney(pendentesValor):''}</div></div>`;
+  renderEvolucaoChart(db);
+  renderCategoriasChart(db,ym);
+  renderDashCategoriaDetalhe(db,ym);
+  const alerts=computeAlerts(db);
+  document.getElementById('dash-alert-count').textContent=alerts.length;
+  document.getElementById('dash-alerts-list').innerHTML=alerts.length
+    ?alerts.slice(0,4).map(a=>`<div class="notif-item ${a.tipo}"><div class="notif-icon">${a.icone}</div><div class="notif-info"><h4>${esc(a.titulo)}</h4><p>${esc(a.texto)}</p>${a.acao?`<div class="notif-actions"><button class="btn btn-success btn-sm" onclick="${a.acao.fn}">${esc(a.acao.label)}</button></div>`:''}</div></div>`).join('')
+    :'<div style="text-align:center;padding:20px;color:var(--gray-300)">✅ Tudo em dia!</div>';
+  const metasDestaque=[...db.metas].filter(m=>!m.concluida).sort((a,b)=>(b.valorAtual/b.valorAlvo)-(a.valorAtual/a.valorAlvo)).slice(0,2);
+  document.getElementById('dash-goals-list').innerHTML=metasDestaque.length
+    ?metasDestaque.map(m=>goalCardHTML(m)).join('')
+    :'<div style="text-align:center;padding:16px;color:var(--gray-300)">Crie uma meta para acompanhar seu progresso 🎯</div>';
+}
+function renderEvolucaoChart(db){
+  const ctx=document.getElementById('chart-evolucao'); if(!ctx) return;
+  if(typeof Chart==='undefined') return;
+  if(chartEvolucao) chartEvolucao.destroy();
+  const labels=[]; const data=[];
+  for(let i=5;i>=0;i--){
+    const d=new Date(); d.setMonth(d.getMonth()-i);
+    const lastDay=new Date(d.getFullYear(),d.getMonth()+1,0);
+    const dateStr=lastDay.getFullYear()+'-'+String(lastDay.getMonth()+1).padStart(2,'0')+'-'+String(lastDay.getDate()).padStart(2,'0');
+    labels.push(d.toLocaleString('pt-BR',{month:'short'}));
+    data.push(netWorth(db,dateStr));
+  }
+  const isDark=document.body.classList.contains('dark');
+  chartEvolucao=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Patrimônio',data,borderColor:'#0B5A47',backgroundColor:'rgba(11,90,71,0.12)',fill:true,tension:.35,borderWidth:3,pointRadius:3,pointBackgroundColor:'#0B5A47'}]},options:{plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$ '+v,font:{family:'Nunito'},color:isDark?'#C7CBDA':'#4A4A6A'},grid:{color:isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.04)'}},x:{ticks:{font:{family:'Nunito',weight:'700'},color:isDark?'#C7CBDA':'#4A4A6A'},grid:{display:false}}}}});
+}
+function renderCategoriasChart(db,ym){
+  const ctx=document.getElementById('chart-categorias'); if(!ctx) return;
+  if(typeof Chart==='undefined') return;
+  if(chartCategorias) chartCategorias.destroy();
+  const porCat={};
+  db.transacoes.filter(t=>t.tipo==='despesa'&&monthKey(t.data)===ym).forEach(t=>{
+    porCat[t.categoriaId]=(porCat[t.categoriaId]||0)+t.valor;
+  });
+  const entries=Object.entries(porCat).sort((a,b)=>b[1]-a[1]);
+  const labels=entries.map(([id])=>{ const c=getCategoria(db,id); return c?c.nome:'Outros'; });
+  const data=entries.map(([,v])=>v);
+  const colors=entries.map(([id])=>{ const c=getCategoria(db,id); return c?c.cor:'#7F8C8D'; });
+  if(!entries.length){ ctx.getContext('2d').clearRect(0,0,ctx.width,ctx.height); document.querySelector('#page-dashboard .chart-card:nth-of-type(2)'); }
+  chartCategorias=new Chart(ctx,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:colors,borderWidth:0,hoverOffset:6}]},options:{plugins:{legend:{position:'bottom',labels:{font:{family:'Nunito',weight:'700'},padding:14,color:document.body.classList.contains('dark')?'#C7CBDA':'#4A4A6A'}}},cutout:'62%'}});
+}
+function shiftDashMonth(n){ currentDashYm=shiftYm(currentDashYm||localToday().slice(0,7),n); renderDashboard(); }
+function goToDashMonthHoje(){ currentDashYm=localToday().slice(0,7); renderDashboard(); }
+// Lista detalhada de gastos por categoria no mês visto no Dashboard — toca numa
+// categoria e vai direto pros lançamentos dela naquele mês.
+function renderDashCategoriaDetalhe(db,ym){
+  const el=document.getElementById('dash-cat-detalhe'); if(!el) return;
+  const despesasMes=db.transacoes.filter(t=>t.tipo==='despesa'&&monthKey(t.data)===ym);
+  if(!despesasMes.length){ el.innerHTML='<div style="text-align:center;padding:16px;color:var(--gray-300);font-size:13px">Nenhuma despesa neste mês</div>'; return; }
+  const totalMes=despesasMes.reduce((s,t)=>s+t.valor,0);
+  const SEM_CATEGORIA='__sem__'; // chave interna p/ evitar o bug de virar a string "null" como chave de objeto
+  const porCat={};
+  despesasMes.forEach(t=>{ const key=t.categoriaId||SEM_CATEGORIA; porCat[key]=(porCat[key]||0)+t.valor; });
+  const entries=Object.entries(porCat).sort((a,b)=>b[1]-a[1]);
+  el.innerHTML=entries.map(([catId,valor])=>{
+    const realId=catId===SEM_CATEGORIA?'':catId;
+    const cat=realId?getCategoria(db,realId):null;
+    const pct=totalMes>0?(valor/totalMes*100):0;
+    const qtd=despesasMes.filter(t=>(t.categoriaId||SEM_CATEGORIA)===catId).length;
+    return `<div class="item-card" style="cursor:pointer;margin-bottom:8px" onclick="verLancDoMes('${esc(realId)}','${ym}')">
+      <div class="item-icon" style="background:${esc(cat?cat.cor:'#7F8C8D')}"><i class="fas fa-${esc(cat?cat.icone:'circle')}"></i></div>
+      <div class="item-info"><strong>${esc(cat?cat.nome:'Sem categoria')}</strong><span>${qtd} lançamento(s) • ${pct.toFixed(0)}% do mês</span></div>
+      <div class="item-val neg">${fmtMoney(valor)}</div>
+    </div>`;
+  }).join('');
+}
+// Abre os Lançamentos já filtrados por mês + categoria (usado pelos cliques no Dashboard)
+function verLancDoMes(categoriaId,ym){
+  showPage('lancamentos');
+  currentLancFilter='todos';
+  document.querySelectorAll('#page-lancamentos .filter-tab').forEach(t=>t.classList.remove('active'));
+  const firstTab=document.querySelector('#page-lancamentos .filter-tab'); if(firstTab) firstTab.classList.add('active');
+  currentLancSearch='';
+  const searchInput=document.querySelector('#page-lancamentos .search-bar input'); if(searchInput) searchInput.value='';
+  currentLancMes=ym;
+  const mesInput=document.getElementById('lanc-mes-filter'); if(mesInput) mesInput.value=ym;
+  renderLancamentos();
+  const db=getDBSync();
+  const cat=categoriaId?getCategoria(db,categoriaId):null;
+  const items=db.transacoes.filter(t=>(categoriaId?t.categoriaId===categoriaId:!t.categoriaId) && monthKey(t.data)===ym).sort((a,b)=>b.data.localeCompare(a.data));
+  const list=document.getElementById('lanc-list');
+  if(!items.length){ list.innerHTML=''; document.getElementById('lanc-empty').style.display='block'; return; }
+  document.getElementById('lanc-empty').style.display='none';
+  list.innerHTML=buildLancCardsHTML(db,items);
+  showToast(`${cat?cat.nome:'Sem categoria'} em ${fmtMesAno(ym)}`,'');
+}
+function goalCardHTML(m){
+  const pct=m.valorAlvo>0?Math.min(100,(m.valorAtual/m.valorAlvo)*100):0;
+  const diasRestantes=m.prazo?Math.ceil((new Date(m.prazo+'T12:00:00')-new Date())/864e5):null;
+  return `<div class="goal-card">
+    <div class="goal-top">
+      <div class="goal-icon" style="background:${esc(m.cor||'#7D3C98')}"><i class="fas fa-bullseye"></i></div>
+      <div class="goal-info"><strong>${esc(m.nome)}</strong><span>${fmtMoney(m.valorAtual)} de ${fmtMoney(m.valorAlvo)}${diasRestantes!==null?(diasRestantes>=0?` • ${diasRestantes}d restantes`:' • prazo vencido'):''}</span></div>
+      <strong style="color:${esc(m.cor||'#7D3C98')}">${pct.toFixed(0)}%</strong>
+    </div>
+    <div class="progress-outer"><div class="progress-inner" style="width:${pct}%;background:${esc(m.cor||'#7D3C98')}"></div></div>
+    <div class="item-actions">
+      <button class="btn btn-success btn-sm" onclick="openDepositoModal('${esc(m.id)}')"><i class="fas fa-piggy-bank"></i> Depositar</button>
+      <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="openMetaModal('${esc(m.id)}')"><i class="fas fa-edit"></i></button>
+      <button class="btn btn-danger btn-sm" onclick="confirmDelete('meta','${esc(m.id)}','a meta ${escJsAttr(m.nome)}')"><i class="fas fa-trash"></i></button>
+    </div>
+  </div>`;
+}
+function refreshAll(){
+  checkNotifications();
+  const active=document.querySelector('.page.active'); if(!active) return;
+  const page=active.id.replace('page-','');
+  if(page==='dashboard') renderDashboard();
+  else if(page==='lancamentos') renderLancamentos();
+  else if(page==='contas') renderContas();
+  else if(page==='metas') renderMetas();
+  else if(page==='relatorios') renderRelatorios();
+  else if(page==='notificacoes') renderNotificacoes();
+  if(page!=='dashboard') renderDashboard();
+}
+function checkNotifications(){
+  const db=getDBSync();
+  const alerts=computeAlerts(db);
+  const badge=document.getElementById('notif-badge');
+  if(alerts.length){ badge.style.display='flex'; badge.textContent=alerts.length; }
+  else badge.style.display='none';
+}
+function renderNotificacoes(){
+  const db=getDBSync();
+  const alerts=computeAlerts(db);
+  document.getElementById('notif-list').innerHTML=alerts.length
+    ?alerts.map(a=>`<div class="notif-item ${a.tipo}"><div class="notif-icon">${a.icone}</div><div class="notif-info"><h4>${esc(a.titulo)}</h4><p>${esc(a.texto)}</p>${a.acao?`<div class="notif-actions"><button class="btn btn-success btn-sm" onclick="${a.acao.fn}">${esc(a.acao.label)}</button></div>`:''}</div></div>`).join('')
+    :'<div class="empty-state"><div class="empty-icon">✅</div><h3>Tudo em dia!</h3><p>Nenhum alerta pendente no momento.</p></div>';
+}
+
+// ════ LANÇAMENTOS ════
+function populateLancSelects(){
+  const db=getDBSync();
+  const contaSel=document.getElementById('lanc-conta-id');
+  const contaDestSel=document.getElementById('lanc-conta-destino-id');
+  const opts=db.contas.filter(c=>!c.arquivada).map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+  contaSel.innerHTML=opts||'<option value="">Nenhuma conta cadastrada</option>';
+  contaDestSel.innerHTML=opts||'<option value="">Nenhuma conta cadastrada</option>';
+  populateCategoriaSelect();
+}
+function populateCategoriaSelect(){
+  const db=getDBSync();
+  const tipo=document.getElementById('lanc-tipo').value;
+  const sel=document.getElementById('lanc-categoria-id');
+  const cats=db.categorias.filter(c=>c.tipo===tipo);
+  sel.innerHTML=cats.map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+}
+function switchLancTipo(tipo){
+  document.getElementById('lanc-tipo').value=tipo;
+  ['despesa','receita','transferencia'].forEach(t=>document.getElementById('lanc-tab-'+t).classList.toggle('active',t===tipo));
+  document.getElementById('lanc-conta-destino-wrap').style.display=tipo==='transferencia'?'block':'none';
+  document.getElementById('lanc-categoria-wrap').style.display=tipo==='transferencia'?'none':'block';
+  document.getElementById('lanc-parcela-wrap').style.display=tipo==='transferencia'?'none':'grid';
+  document.getElementById('lanc-pago-wrap').style.display=tipo==='transferencia'?'none':'flex';
+  document.getElementById('lanc-conta-label').textContent=tipo==='transferencia'?'Conta de origem *':'Conta *';
+  document.getElementById('lanc-pago-label').textContent=tipo==='receita'?'Já foi recebido (conta a receber fica desmarcado)':'Já foi pago (conta a pagar fica desmarcado)';
+  populateCategoriaSelect();
+}
+function onLancRepeatChange(){
+  const v=document.getElementById('lanc-repeat').value;
+  document.getElementById('lanc-repeat-count-wrap').style.display=(v==='parcelado'||v==='fixo_mensal')?'block':'none';
+  document.getElementById('lanc-automatico-info').style.display=v==='automatico'?'block':'none';
+}
+document.addEventListener('change', e=>{ if(e.target && e.target.id==='lanc-repeat') onLancRepeatChange(); });
+function openLancModal(tipoPreferido){
+  const db=getDBSync();
+  if(!db.contas.filter(c=>!c.arquivada).length){ showToast('Cadastre uma conta antes de lançar','error'); showPage('contas'); return; }
+  document.getElementById('lanc-edit-id').value='';
+  document.getElementById('modal-lanc-title').textContent='💸 Novo Lançamento';
+  document.getElementById('lanc-desc').value='';
+  document.getElementById('lanc-valor').value='';
+  document.getElementById('lanc-data').value=localToday();
+  document.getElementById('lanc-repeat').value='none';
+  document.getElementById('lanc-repeat-count').value='2';
+  document.getElementById('lanc-repeat-count-wrap').style.display='none';
+  document.getElementById('lanc-automatico-info').style.display='none';
+  document.getElementById('lanc-pago').checked=true;
+  populateLancSelects();
+  switchLancTipo(tipoPreferido||'despesa');
+  openModal('modal-lanc');
+}
+function editLanc(id){
+  const db=getDBSync(); const t=db.transacoes.find(x=>x.id===id); if(!t) return;
+  document.getElementById('lanc-edit-id').value=id;
+  document.getElementById('modal-lanc-title').textContent='✏️ Editar Lançamento';
+  populateLancSelects();
+  switchLancTipo(t.tipo);
+  document.getElementById('lanc-desc').value=t.desc;
+  document.getElementById('lanc-valor').value=t.valor;
+  document.getElementById('lanc-data').value=t.data;
+  document.getElementById('lanc-conta-id').value=t.contaId||'';
+  if(t.contaDestinoId) document.getElementById('lanc-conta-destino-id').value=t.contaDestinoId;
+  if(t.categoriaId) document.getElementById('lanc-categoria-id').value=t.categoriaId;
+  document.getElementById('lanc-pago').checked=t.pago!==false;
+  document.getElementById('lanc-repeat').value='none';
+  document.getElementById('lanc-repeat-count-wrap').style.display='none';
+  document.getElementById('lanc-automatico-info').style.display='none';
+  openModal('modal-lanc');
+}
+async function saveLancamento(){
+  const tipo=document.getElementById('lanc-tipo').value;
+  const desc=document.getElementById('lanc-desc').value.trim();
+  const valorTotal=parseFloat(document.getElementById('lanc-valor').value)||0;
+  const data=document.getElementById('lanc-data').value;
+  const contaId=document.getElementById('lanc-conta-id').value;
+  const contaDestinoId=document.getElementById('lanc-conta-destino-id').value;
+  const categoriaId=document.getElementById('lanc-categoria-id').value;
+  const pago=document.getElementById('lanc-pago').checked;
+  if(!desc){ showToast('Informe a descrição','error'); return; }
+  if(!valorTotal){ showToast('Informe o valor','error'); return; }
+  if(!data){ showToast('Informe a data','error'); return; }
+  if(!contaId){ showToast('Selecione a conta','error'); return; }
+  if(tipo==='transferencia' && (!contaDestinoId||contaDestinoId===contaId)){ showToast('Selecione uma conta de destino diferente','error'); return; }
+  const db=await getDB();
+  const editId=document.getElementById('lanc-edit-id').value;
+  const repeat=(editId||tipo==='transferencia')?'none':document.getElementById('lanc-repeat').value;
+  let count=parseInt(document.getElementById('lanc-repeat-count').value)||1;
+  count=Math.min(Math.max(count,2),60);
+
+  if(editId){
+    const idx=db.transacoes.findIndex(t=>t.id===editId);
+    if(idx>-1) db.transacoes[idx]={...db.transacoes[idx],tipo,desc,valor:valorTotal,data,contaId,contaDestinoId:tipo==='transferencia'?contaDestinoId:null,categoriaId:tipo==='transferencia'?null:categoriaId,pago:tipo==='transferencia'?true:pago};
+    showToast('Lançamento atualizado ✅','success');
+  } else if(repeat==='automatico'){
+    const novaRecorrencia={
+      id:uid(),tipo,desc,valor:valorTotal,diaDoMes:parseInt(data.slice(8,10),10),
+      contaId,categoriaId:categoriaId||null,dataInicio:data,ativa:true,ultimoMesGerado:null,
+      createdAt:new Date().toISOString()
+    };
+    db.recorrencias.push(novaRecorrencia);
+    processRecorrencias(db);
+    showToast('Recorrência automática criada! A partir de agora ela lança sozinha todo mês 🔄','success');
+  } else if(repeat==='parcelado'){
+    // Uma "compra parcelada": divide o valor total em N lançamentos mensais
+    // (os centavos que sobram da divisão vão para as primeiras parcelas, pra
+    // soma bater certinho com o valor total). Ficam ligados por recorrenteId
+    // e aparecem agrupados em 1 card só na lista de lançamentos.
+    const groupId=uid();
+    const centavosTotal=Math.round(valorTotal*100);
+    const base=Math.floor(centavosTotal/count);
+    const resto=centavosTotal-(base*count);
+    for(let i=0;i<count;i++){
+      const valorParcela=(base+(i<resto?1:0))/100;
+      db.transacoes.push({
+        id:uid(),tipo,desc,valor:valorParcela,data:addMonths(data,i),
+        contaId,contaDestinoId:null,categoriaId,pago:i===0?pago:false,
+        recorrenteId:groupId,parcela:{atual:i+1,total:count},
+        createdAt:new Date().toISOString()
+      });
+    }
+    showToast(`Compra parcelada em ${count}x! 🧾`,'success');
+  } else if(repeat==='fixo_mensal'){
+    const groupId=uid();
+    for(let i=0;i<count;i++){
+      db.transacoes.push({
+        id:uid(),tipo,desc,valor:valorTotal,data:addMonths(data,i),
+        contaId,contaDestinoId:null,categoriaId,pago:i===0?pago:false,
+        recorrenteId:groupId,parcela:null,
+        createdAt:new Date().toISOString()
+      });
+    }
+    showToast(`${count} lançamentos criados! 🔁`,'success');
+  } else {
+    db.transacoes.push({id:uid(),tipo,desc,valor:valorTotal,data,contaId,contaDestinoId:tipo==='transferencia'?contaDestinoId:null,categoriaId:tipo==='transferencia'?null:categoriaId,pago:tipo==='transferencia'?true:pago,createdAt:new Date().toISOString()});
+    showToast('Lançamento salvo! 💾','success');
+  }
+  await saveDB(db); closeModal('modal-lanc'); refreshAll();
+}
+function tipoIcon(tipo){ return tipo==='receita'?'fa-arrow-down':tipo==='despesa'?'fa-arrow-up':'fa-right-left'; }
+// Card de um lançamento normal (avulso, transferência, ou uma recorrência gerada automaticamente)
+function lancCardHTML(db,t){
+  const conta=getConta(db,t.contaId);
+  const contaDestino=t.contaDestinoId?getConta(db,t.contaDestinoId):null;
+  const cat=t.categoriaId?getCategoria(db,t.categoriaId):null;
+  const cor=t.tipo==='transferencia'?'#2E86AB':(cat?cat.cor:'#7F8C8D');
+  const icone=t.tipo==='transferencia'?'right-left':(cat?cat.icone:'circle');
+  const valStr=(t.tipo==='receita'?'+ ':t.tipo==='despesa'?'- ':'')+fmtMoney(t.valor);
+  const tagAutomatico=t.recorrenciaId?'<span class="tag tag-gold" style="margin-left:4px"><i class="fas fa-sync-alt" style="font-size:9px"></i> Automático</span>':'';
+  const subInfo=t.tipo==='transferencia'
+    ?`${conta?esc(conta.nome):''} → ${contaDestino?esc(contaDestino.nome):''} • ${fmtDate(t.data)}`
+    :`${conta?esc(conta.nome):''}${cat?' • '+esc(cat.nome):''} • ${fmtDate(t.data)}`;
+  return `<div class="item-card">
+    <div class="item-icon" style="background:${esc(cor)}"><i class="fas fa-${icone}"></i></div>
+    <div class="item-info">
+      <strong>${esc(t.desc)} ${t.pago===false?'<span class=\"tag tag-amber\" style=\"margin-left:4px\">Pendente</span>':''}${tagAutomatico}</strong>
+      <span>${subInfo}</span>
+    </div>
+    <div>
+      <div class="item-val ${t.tipo==='receita'?'pos':t.tipo==='despesa'?'neg':''}">${valStr}</div>
+      <div class="item-actions" style="margin-top:6px">
+        ${t.pago===false?`<button class="btn btn-success btn-sm" onclick="marcarPago('${esc(t.id)}')" title="Marcar como pago"><i class="fas fa-check"></i></button>`:''}
+        <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="editLanc('${esc(t.id)}')"><i class="fas fa-edit"></i></button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDelete('lanc','${esc(t.id)}','o lançamento ${escJsAttr(t.desc)}')"><i class="fas fa-trash"></i></button>
+      </div>
+    </div>
+  </div>`;
+}
+// Card único representando TODAS as parcelas de uma compra parcelada — mostra o
+// valor total, quantas parcelas e o valor mensal, em vez de uma linha por mês.
+function parcelamentoCardHTML(db,groupId){
+  const parcelas=db.transacoes.filter(t=>t.recorrenteId===groupId && t.parcela).sort((a,b)=>a.parcela.atual-b.parcela.atual);
+  if(!parcelas.length) return '';
+  const first=parcelas[0];
+  const total=parcelas.reduce((s,t)=>s+t.valor,0);
+  const count=first.parcela.total;
+  const pagas=parcelas.filter(t=>t.pago!==false).length;
+  const valorMedio=total/count;
+  const conta=getConta(db,first.contaId);
+  const cat=first.categoriaId?getCategoria(db,first.categoriaId):null;
+  const cor=cat?cat.cor:'#7F8C8D';
+  const icone=cat?cat.icone:'layer-group';
+  const sinal=first.tipo==='receita'?'+ ':'- ';
+  const statusTexto=pagas>=count?'todas pagas':`${count-pagas} pendente(s)`;
+  return `<div class="item-card">
+    <div class="item-icon" style="background:${esc(cor)}"><i class="fas fa-${esc(icone)}"></i></div>
+    <div class="item-info">
+      <strong>${esc(first.desc)} <span class="tag tag-blue" style="margin-left:4px">Parcelado ${pagas}/${count}</span></strong>
+      <span>${conta?esc(conta.nome):''}${cat?' • '+esc(cat.nome):''} • total ${fmtMoney(total)} • ${statusTexto}</span>
+    </div>
+    <div>
+      <div class="item-val ${first.tipo==='receita'?'pos':'neg'}">${sinal}${fmtMoney(valorMedio)}/mês</div>
+      <div class="item-actions" style="margin-top:6px">
+        <button class="btn btn-sm" style="background:var(--blue-pale);color:var(--blue)" onclick="openParcelasModal('${esc(groupId)}')"><i class="fas fa-list"></i> Ver parcelas</button>
+      </div>
+    </div>
+  </div>`;
+}
+// Monta a lista de cards já agrupando as compras parceladas em 1 card só
+function buildLancCardsHTML(db,items){
+  const seenGroups=new Set();
+  const parts=[];
+  items.forEach(t=>{
+    if(t.parcela && t.recorrenteId){
+      if(seenGroups.has(t.recorrenteId)) return;
+      seenGroups.add(t.recorrenteId);
+      parts.push(parcelamentoCardHTML(db,t.recorrenteId));
+      return;
+    }
+    parts.push(lancCardHTML(db,t));
+  });
+  return parts.join('');
+}
+function renderLancMesResumo(db){
+  const el=document.getElementById('lanc-mes-resumo'); if(!el) return;
+  if(!currentLancMes){ el.innerHTML=''; return; }
+  const {receita,despesa,saldo}=monthTotals(db,currentLancMes);
+  el.innerHTML=`<div class="info-box" style="margin-bottom:16px"><strong>${fmtMesAno(currentLancMes)}:</strong> recebido ${fmtMoney(receita)} • gasto ${fmtMoney(despesa)} • saldo <strong style="color:${saldo>=0?'var(--mint)':'var(--rose)'}">${fmtMoney(saldo)}</strong></div>`;
+}
+function renderLancamentos(){
+  const db=getDBSync();
+  let items=[...db.transacoes].sort((a,b)=>b.data.localeCompare(a.data)||(b.createdAt||'').localeCompare(a.createdAt||''));
+  if(currentLancSearch){
+    const q=currentLancSearch.toLowerCase();
+    items=items.filter(t=>t.desc.toLowerCase().includes(q));
+  }
+  if(currentLancMes) items=items.filter(t=>monthKey(t.data)===currentLancMes);
+  if(currentLancFilter==='pendente') items=items.filter(t=>t.pago===false);
+  else if(currentLancFilter!=='todos') items=items.filter(t=>t.tipo===currentLancFilter);
+  renderLancMesResumo(db);
+  const list=document.getElementById('lanc-list');
+  const empty=document.getElementById('lanc-empty');
+  if(!items.length){ list.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  list.innerHTML=buildLancCardsHTML(db,items);
+}
+function filterLancamentos(v){ currentLancSearch=v; renderLancamentos(); }
+function filterLancTipo(f,el){ currentLancFilter=f; document.querySelectorAll('#page-lancamentos .filter-tab').forEach(t=>t.classList.remove('active')); el.classList.add('active'); renderLancamentos(); }
+function filterLancMes(v){ currentLancMes=v; renderLancamentos(); }
+function shiftLancMes(n){
+  const base=currentLancMes||localToday().slice(0,7);
+  currentLancMes=shiftYm(base,n);
+  const mesInput=document.getElementById('lanc-mes-filter'); if(mesInput) mesInput.value=currentLancMes;
+  renderLancamentos();
+}
+
+// ════ VER / GERENCIAR PARCELAS DE UM PARCELAMENTO ════
+let currentParcelasGroupId=null;
+function openParcelasModal(groupId){
+  const db=getDBSync();
+  const parcelas=db.transacoes.filter(t=>t.recorrenteId===groupId && t.parcela).sort((a,b)=>a.parcela.atual-b.parcela.atual);
+  if(!parcelas.length){ showToast('Parcelamento não encontrado','error'); return; }
+  currentParcelasGroupId=groupId;
+  document.getElementById('modal-parcelas-title').textContent=`🧾 ${esc(parcelas[0].desc)}`;
+  document.getElementById('parcelas-list').innerHTML=parcelas.map(t=>`
+    <div class="item-card" style="margin-bottom:8px">
+      <div class="item-icon" style="background:${t.pago===false?'var(--gray-300)':'var(--mint)'}"><i class="fas fa-${t.pago===false?'clock':'check'}"></i></div>
+      <div class="item-info"><strong>Parcela ${t.parcela.atual}/${t.parcela.total}</strong><span>${fmtDate(t.data)} • ${t.pago===false?'Pendente':'Paga'}</span></div>
+      <div>
+        <div class="item-val">${fmtMoney(t.valor)}</div>
+        <div class="item-actions" style="margin-top:6px">
+          ${t.pago===false?`<button class="btn btn-success btn-sm" onclick="marcarParcelaPagaERecarregar('${esc(t.id)}','${esc(groupId)}')" title="Marcar como paga"><i class="fas fa-check"></i></button>`:''}
+          <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="closeModal('modal-parcelas');editLanc('${esc(t.id)}')" title="Editar esta parcela"><i class="fas fa-edit"></i></button>
+        </div>
+      </div>
+    </div>`).join('');
+  openModal('modal-parcelas');
+}
+async function marcarParcelaPagaERecarregar(id,groupId){
+  await marcarPago(id);
+  openParcelasModal(groupId);
+}
+function confirmDeleteParcelamentoFromModal(){
+  if(!currentParcelasGroupId) return;
+  const db=getDBSync();
+  const parcelas=db.transacoes.filter(t=>t.recorrenteId===currentParcelasGroupId && t.parcela);
+  const desc=parcelas[0]?parcelas[0].desc:'este parcelamento';
+  const groupId=currentParcelasGroupId;
+  closeModal('modal-parcelas');
+  confirmDelete('parcelamento',groupId,`o parcelamento "${desc}" (todas as ${parcelas.length} parcelas)`);
+}
+
+// ════ CONTAS ════
+const CONTA_TIPO_INFO={
+  corrente:{icone:'fa-landmark',label:'Conta corrente'},
+  poupanca:{icone:'fa-piggy-bank',label:'Poupança'},
+  carteira:{icone:'fa-wallet',label:'Carteira'},
+  cartao:{icone:'fa-credit-card',label:'Cartão de crédito'},
+  investimento:{icone:'fa-chart-line',label:'Investimento'}
+};
+function selectAccountColor(el){ document.querySelectorAll('#conta-color-picker .color-opt').forEach(o=>o.classList.remove('selected')); el.classList.add('selected'); selectedAccountColor=el.dataset.color; }
+function onContaTipoChange(){
+  const tipo=document.getElementById('conta-tipo').value;
+  document.getElementById('conta-cartao-wrap').style.display=tipo==='cartao'?'grid':'none';
+  document.getElementById('conta-saldo-label').textContent=tipo==='cartao'?'Fatura em aberto atual (R$, negativo se deve)':'Saldo inicial (R$)';
+}
+function openContaModal(id){
+  document.getElementById('conta-edit-id').value=id||'';
+  document.getElementById('modal-conta-title').textContent=id?'✏️ Editar Conta':'🏦 Nova Conta';
+  if(id){
+    const db=getDBSync(); const c=db.contas.find(x=>x.id===id); if(!c) return;
+    document.getElementById('conta-nome').value=c.nome;
+    document.getElementById('conta-tipo').value=c.tipo;
+    document.getElementById('conta-saldo').value=c.saldoInicial||0;
+    document.getElementById('conta-limite').value=c.limite||'';
+    document.getElementById('conta-vencimento').value=c.diaVencimento||'';
+    selectedAccountColor=c.cor||'#0B5A47';
+  } else {
+    document.getElementById('conta-nome').value='';
+    document.getElementById('conta-tipo').value='corrente';
+    document.getElementById('conta-saldo').value='';
+    document.getElementById('conta-limite').value='';
+    document.getElementById('conta-vencimento').value='';
+    selectedAccountColor='#0B5A47';
+  }
+  onContaTipoChange();
+  document.querySelectorAll('#conta-color-picker .color-opt').forEach(o=>o.classList.toggle('selected',o.dataset.color===selectedAccountColor));
+  openModal('modal-conta');
+}
+async function saveConta(){
+  const nome=document.getElementById('conta-nome').value.trim();
+  if(!nome){ showToast('Nome da conta é obrigatório','error'); return; }
+  const tipo=document.getElementById('conta-tipo').value;
+  const saldoInicial=parseFloat(document.getElementById('conta-saldo').value)||0;
+  const limite=parseFloat(document.getElementById('conta-limite').value)||0;
+  const diaVencimento=parseInt(document.getElementById('conta-vencimento').value)||null;
+  const db=await getDB();
+  const id=document.getElementById('conta-edit-id').value;
+  const conta={nome,tipo,saldoInicial,limite,diaVencimento,cor:selectedAccountColor};
+  if(id){ const idx=db.contas.findIndex(c=>c.id===id); db.contas[idx]={...db.contas[idx],...conta}; showToast('Conta atualizada ✅','success'); }
+  else { db.contas.push({id:uid(),...conta,arquivada:false,createdAt:new Date().toISOString()}); showToast('Conta criada! 🏦','success'); }
+  await saveDB(db); closeModal('modal-conta'); refreshAll();
+}
+const CONTA_TIPO_ORDEM=['corrente','poupanca','carteira','cartao','investimento'];
+function contaCardHTML(db,c){
+  const saldo=accountBalance(c.id,db);
+  const info=CONTA_TIPO_INFO[c.tipo]||CONTA_TIPO_INFO.corrente;
+  let extra='';
+  if(c.tipo==='cartao'&&c.limite>0){
+    const usado=Math.max(0,-saldo);
+    const disponivel=Math.max(0,c.limite-usado);
+    const pct=Math.min(100,usado/c.limite*100);
+    extra=`<div style="font-size:12px;color:var(--gray-500);margin-top:4px">Disponível: ${fmtMoney(disponivel)} de ${fmtMoney(c.limite)}${c.diaVencimento?` • vence dia ${c.diaVencimento}`:''}</div>
+      <div class="progress-outer"><div class="progress-inner" style="width:${pct}%;background:${pct>=90?'var(--rose)':'var(--emerald)'}"></div></div>`;
+  }
+  return `<div class="account-card">
+    <div class="account-top">
+      <div class="account-icon" style="background:${esc(c.cor||'#0B5A47')}"><i class="fas ${info.icone}"></i></div>
+      <div class="account-info"><strong>${esc(c.nome)}</strong><span>${info.label}</span></div>
+      <div class="account-balance" style="color:${saldo>=0?'var(--gray-900)':'var(--rose)'}">${fmtMoney(saldo)}</div>
+    </div>
+    ${extra}
+    <div class="item-actions">
+      <button class="btn btn-sm" style="background:var(--blue-pale);color:var(--blue)" onclick="filterLancByConta('${esc(c.id)}')"><i class="fas fa-list"></i> Extrato</button>
+      <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="openContaModal('${esc(c.id)}')"><i class="fas fa-edit"></i></button>
+      <button class="btn btn-danger btn-sm" onclick="confirmDelete('conta','${esc(c.id)}','a conta ${escJsAttr(c.nome)}')"><i class="fas fa-trash"></i></button>
+    </div>
+  </div>`;
+}
+// Agrupa as contas por tipo (Correntes, Cartões, Investimentos...) com um
+// subtotal por grupo — ajuda a enxergar o todo quando há muitas contas.
+function renderContas(){
+  const db=getDBSync();
+  const contas=db.contas.filter(c=>!c.arquivada);
+  const list=document.getElementById('contas-list');
+  const empty=document.getElementById('contas-empty');
+  if(!contas.length){ list.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  const grupos={};
+  contas.forEach(c=>{ (grupos[c.tipo]=grupos[c.tipo]||[]).push(c); });
+  const tiposOrdenados=[...CONTA_TIPO_ORDEM.filter(t=>grupos[t]), ...Object.keys(grupos).filter(t=>!CONTA_TIPO_ORDEM.includes(t))];
+  list.innerHTML=tiposOrdenados.map(tipo=>{
+    const info=CONTA_TIPO_INFO[tipo]||CONTA_TIPO_INFO.corrente;
+    const contasDoTipo=grupos[tipo];
+    const subtotal=contasDoTipo.reduce((s,c)=>s+accountBalance(c.id,db),0);
+    const mostraSubtotal=contasDoTipo.length>1;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;margin:18px 0 8px;padding:0 2px">
+        <span style="font-size:12px;font-weight:800;color:var(--gray-500);text-transform:uppercase;letter-spacing:.3px"><i class="fas ${info.icone}"></i> ${esc(info.label)}${contasDoTipo.length>1?'s':''}</span>
+        ${mostraSubtotal?`<span style="font-size:13px;font-weight:800;color:${subtotal>=0?'var(--gray-700)':'var(--rose)'}">${fmtMoney(subtotal)}</span>`:''}
+      </div>` + contasDoTipo.map(c=>contaCardHTML(db,c)).join('');
+  }).join('');
+}
+function filterLancByConta(contaId){
+  showPage('lancamentos');
+  currentLancFilter='todos';
+  document.querySelectorAll('#page-lancamentos .filter-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelector('#page-lancamentos .filter-tab').classList.add('active');
+  const db=getDBSync();
+  const c=getConta(db,contaId);
+  currentLancSearch='';
+  const searchInput=document.querySelector('#page-lancamentos .search-bar input');
+  if(searchInput) searchInput.value='';
+  currentLancMes='';
+  const mesInput=document.getElementById('lanc-mes-filter'); if(mesInput) mesInput.value='';
+  renderLancamentos();
+  // filtro rápido por conta via lista filtrada manualmente
+  const list=document.getElementById('lanc-list');
+  const items=db.transacoes.filter(t=>t.contaId===contaId||t.contaDestinoId===contaId).sort((a,b)=>b.data.localeCompare(a.data));
+  if(!items.length){ list.innerHTML=''; document.getElementById('lanc-empty').style.display='block'; return; }
+  document.getElementById('lanc-empty').style.display='none';
+  list.innerHTML=buildLancCardsHTML(db,items);
+  showToast(`Extrato de ${c?c.nome:'conta'}`,'');
+}
+function openTransferModal(){
+  const db=getDBSync();
+  if(db.contas.filter(c=>!c.arquivada).length<2){ showToast('Cadastre pelo menos 2 contas para transferir','error'); return; }
+  const opts=db.contas.filter(c=>!c.arquivada).map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+  document.getElementById('transfer-origem').innerHTML=opts;
+  document.getElementById('transfer-destino').innerHTML=opts;
+  document.getElementById('transfer-valor').value='';
+  document.getElementById('transfer-data').value=localToday();
+  openModal('modal-transfer');
+}
+async function saveTransferQuick(){
+  const origem=document.getElementById('transfer-origem').value;
+  const destino=document.getElementById('transfer-destino').value;
+  const valor=parseFloat(document.getElementById('transfer-valor').value)||0;
+  const data=document.getElementById('transfer-data').value;
+  if(origem===destino){ showToast('Escolha contas diferentes','error'); return; }
+  if(!valor){ showToast('Informe o valor','error'); return; }
+  if(!data){ showToast('Informe a data','error'); return; }
+  const db=await getDB();
+  const origemConta=getConta(db,origem), destinoConta=getConta(db,destino);
+  db.transacoes.push({id:uid(),tipo:'transferencia',desc:`Transferência: ${origemConta?origemConta.nome:''} → ${destinoConta?destinoConta.nome:''}`,valor,data,contaId:origem,contaDestinoId:destino,categoriaId:null,pago:true,createdAt:new Date().toISOString()});
+  await saveDB(db); closeModal('modal-transfer'); refreshAll();
+  showToast('Transferência realizada! 🔁','success');
+}
+
+// ════ METAS ════
+function selectGoalColor(el){ document.querySelectorAll('#meta-color-picker .color-opt').forEach(o=>o.classList.remove('selected')); el.classList.add('selected'); selectedGoalColor=el.dataset.color; }
+function openMetaModal(id){
+  document.getElementById('meta-edit-id').value=id||'';
+  document.getElementById('modal-meta-title').textContent=id?'✏️ Editar Meta':'🎯 Nova Meta';
+  if(id){
+    const db=getDBSync(); const m=db.metas.find(x=>x.id===id); if(!m) return;
+    document.getElementById('meta-nome').value=m.nome;
+    document.getElementById('meta-valor-alvo').value=m.valorAlvo;
+    document.getElementById('meta-valor-atual').value=m.valorAtual||0;
+    document.getElementById('meta-prazo').value=m.prazo||'';
+    selectedGoalColor=m.cor||'#7D3C98';
+  } else {
+    document.getElementById('meta-nome').value='';
+    document.getElementById('meta-valor-alvo').value='';
+    document.getElementById('meta-valor-atual').value='';
+    document.getElementById('meta-prazo').value='';
+    selectedGoalColor='#7D3C98';
+  }
+  document.querySelectorAll('#meta-color-picker .color-opt').forEach(o=>o.classList.toggle('selected',o.dataset.color===selectedGoalColor));
+  openModal('modal-meta');
+}
+async function saveMeta(){
+  const nome=document.getElementById('meta-nome').value.trim();
+  const valorAlvo=parseFloat(document.getElementById('meta-valor-alvo').value)||0;
+  if(!nome){ showToast('Nome da meta é obrigatório','error'); return; }
+  if(!valorAlvo){ showToast('Informe o valor alvo','error'); return; }
+  const valorAtual=parseFloat(document.getElementById('meta-valor-atual').value)||0;
+  const db=await getDB();
+  const id=document.getElementById('meta-edit-id').value;
+  const meta={nome,valorAlvo,valorAtual,prazo:document.getElementById('meta-prazo').value||'',cor:selectedGoalColor,concluida:valorAtual>=valorAlvo};
+  if(id){ const idx=db.metas.findIndex(m=>m.id===id); db.metas[idx]={...db.metas[idx],...meta}; showToast('Meta atualizada ✅','success'); }
+  else { db.metas.push({id:uid(),...meta,createdAt:new Date().toISOString()}); showToast('Meta criada! 🎯','success'); }
+  await saveDB(db); closeModal('modal-meta'); refreshAll();
+}
+function openDepositoModal(metaId){
+  const db=getDBSync(); const m=db.metas.find(x=>x.id===metaId); if(!m) return;
+  document.getElementById('deposito-meta-id').value=metaId;
+  document.getElementById('deposito-meta-info').textContent=`${m.nome} — atualmente ${fmtMoney(m.valorAtual)} de ${fmtMoney(m.valorAlvo)}`;
+  document.getElementById('deposito-valor').value='';
+  openModal('modal-meta-deposito');
+}
+async function confirmDeposito(){
+  const id=document.getElementById('deposito-meta-id').value;
+  const valor=parseFloat(document.getElementById('deposito-valor').value)||0;
+  if(!valor){ showToast('Informe o valor','error'); return; }
+  const db=await getDB(); const m=db.metas.find(x=>x.id===id); if(!m) return;
+  m.valorAtual=(m.valorAtual||0)+valor;
+  const jaEstavaConcluida=m.concluida;
+  m.concluida=m.valorAtual>=m.valorAlvo;
+  await saveDB(db); closeModal('modal-meta-deposito'); refreshAll();
+  showToast(m.concluida&&!jaEstavaConcluida?`Meta "${m.nome}" concluída! 🎉`:'Depósito registrado! 💰','success');
+}
+function renderMetas(){
+  const db=getDBSync();
+  const metas=[...db.metas].sort((a,b)=>(a.concluida?1:0)-(b.concluida?1:0)||(b.valorAtual/b.valorAlvo)-(a.valorAtual/a.valorAlvo));
+  const list=document.getElementById('metas-list');
+  const empty=document.getElementById('metas-empty');
+  const hasReserva=db.metas.some(m=>/reserva/i.test(m.nome));
+  document.getElementById('metas-tip').style.display=hasReserva?'none':'block';
+  if(!metas.length){ list.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  list.innerHTML=metas.map(m=>m.concluida
+    ?`<div class="goal-card" style="opacity:.75">
+        <div class="goal-top">
+          <div class="goal-icon" style="background:${esc(m.cor||'#7D3C98')}"><i class="fas fa-check"></i></div>
+          <div class="goal-info"><strong>${esc(m.nome)} 🎉</strong><span>Meta concluída — ${fmtMoney(m.valorAtual)}</span></div>
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="openMetaModal('${esc(m.id)}')"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDelete('meta','${esc(m.id)}','a meta ${escJsAttr(m.nome)}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </div>`
+    :goalCardHTML(m)
+  ).join('');
+}
+
+// ════ RELATÓRIOS ════
+function periodoMonths(periodo){
+  if(periodo==='mes') return 1;
+  if(periodo==='3m') return 3;
+  if(periodo==='6m') return 6;
+  if(periodo==='12m') return 12;
+  return 0; // tudo
+}
+function filterRelPeriodo(p,el){ currentRelPeriodo=p; document.querySelectorAll('#page-relatorios .tabs-filter .filter-tab').forEach(t=>t.classList.remove('active')); el.classList.add('active'); renderRelatorios(); }
+function relDateRange(){
+  const n=periodoMonths(currentRelPeriodo);
+  if(!n) return null;
+  const hoje=new Date();
+  const inicio=new Date(hoje.getFullYear(),hoje.getMonth()-(n-1),1);
+  const inicioStr=inicio.getFullYear()+'-'+String(inicio.getMonth()+1).padStart(2,'0')+'-01';
+  return inicioStr;
+}
+function renderRelatorios(){
+  const db=getDBSync();
+  renderRelBarraChart(db);
+  renderRelPizzaChart(db);
+  renderOrcamento(db);
+  renderProjecao();
+}
+function renderRelBarraChart(db){
+  const ctx=document.getElementById('chart-rel-barra'); if(!ctx) return;
+  if(typeof Chart==='undefined') return;
+  if(chartRelBarra) chartRelBarra.destroy();
+  const n=periodoMonths(currentRelPeriodo)||12;
+  const labels=[]; const receitas=[]; const despesas=[];
+  for(let i=n-1;i>=0;i--){
+    const d=new Date(); d.setMonth(d.getMonth()-i);
+    const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    labels.push(d.toLocaleString('pt-BR',{month:'short',year:'2-digit'}));
+    const {receita,despesa}=monthTotals(db,ym);
+    receitas.push(receita); despesas.push(despesa);
+  }
+  const isDark=document.body.classList.contains('dark');
+  chartRelBarra=new Chart(ctx,{type:'bar',data:{labels,datasets:[
+    {label:'Receitas',data:receitas,backgroundColor:'#1A9B60',borderRadius:6},
+    {label:'Despesas',data:despesas,backgroundColor:'#C0392B',borderRadius:6}
+  ]},options:{plugins:{legend:{position:'bottom',labels:{font:{family:'Nunito',weight:'700'},color:isDark?'#C7CBDA':'#4A4A6A'}}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'R$ '+v,color:isDark?'#C7CBDA':'#4A4A6A'},grid:{color:isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.04)'}},x:{ticks:{color:isDark?'#C7CBDA':'#4A4A6A'},grid:{display:false}}}}});
+}
+function renderRelPizzaChart(db){
+  const ctx=document.getElementById('chart-rel-pizza'); if(!ctx) return;
+  if(typeof Chart==='undefined') return;
+  if(chartRelPizza) chartRelPizza.destroy();
+  const inicio=relDateRange();
+  const despesas=db.transacoes.filter(t=>t.tipo==='despesa'&&(!inicio||t.data>=inicio));
+  const porCat={};
+  despesas.forEach(t=>{ porCat[t.categoriaId]=(porCat[t.categoriaId]||0)+t.valor; });
+  const entries=Object.entries(porCat).sort((a,b)=>b[1]-a[1]);
+  const labels=entries.map(([id])=>{ const c=getCategoria(db,id); return c?c.nome:'Outros'; });
+  const data=entries.map(([,v])=>v);
+  const colors=entries.map(([id])=>{ const c=getCategoria(db,id); return c?c.cor:'#7F8C8D'; });
+  const isDark=document.body.classList.contains('dark');
+  chartRelPizza=new Chart(ctx,{type:'pie',data:{labels,datasets:[{data,backgroundColor:colors,borderWidth:0}]},options:{plugins:{legend:{position:'bottom',labels:{font:{family:'Nunito',weight:'700'},padding:12,color:isDark?'#C7CBDA':'#4A4A6A'}}}}});
+}
+function shiftOrcamentoMes(n){ currentOrcamentoYm=shiftYm(currentOrcamentoYm||localToday().slice(0,7),n); renderOrcamento(getDBSync()); }
+function renderOrcamento(db){
+  const el=document.getElementById('rel-orcamento'); if(!el) return;
+  if(!currentOrcamentoYm) currentOrcamentoYm=localToday().slice(0,7);
+  const ym=currentOrcamentoYm;
+  const labelEl=document.getElementById('orcamento-mes-label'); if(labelEl) labelEl.textContent=fmtMesAno(ym);
+  const naoAlocadoEl=document.getElementById('orcamento-nao-alocado');
+  if(naoAlocadoEl){
+    const naoAlocado=naoAlocadoMes(db,ym);
+    const cor=Math.abs(naoAlocado)<0.005?'var(--mint)':(naoAlocado>0?'var(--amber)':'var(--rose)');
+    const texto=Math.abs(naoAlocado)<0.005?'Tudo planejado! Cada real do mês já tem um destino ✅':(naoAlocado>0?`Ainda falta planejar ${fmtMoney(naoAlocado)}`:`Você planejou ${fmtMoney(Math.abs(naoAlocado))} a mais do que recebeu neste mês`);
+    naoAlocadoEl.innerHTML=`<div class="info-box" style="background:${naoAlocado>0?'var(--amber-pale)':(naoAlocado<0?'var(--rose-pale)':'var(--mint-pale)')};border-color:${cor};color:${cor}"><strong style="color:${cor}">${texto}</strong></div>`;
+  }
+  const cats=db.categorias.filter(c=>c.tipo==='despesa');
+  el.innerHTML=cats.map(c=>{
+    const gasto=gastoCategoriaMes(db,c.id,ym);
+    const alocado=alocacaoCategoriaMes(db,c.id,ym);
+    const saldo=saldoAcumuladoCategoria(db,c.id,ym);
+    if(!alocado && !gasto && saldo===0) return '';
+    const pct=alocado>0?Math.min(100,gasto/alocado*100):(gasto>0?100:0);
+    const corBarra=pct>=100?'var(--rose)':pct>=90?'var(--amber)':c.cor;
+    const corSaldo=saldo<0?'var(--rose)':'var(--mint)';
+    return `<div style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="font-size:13px;font-weight:700"><i class="fas fa-${c.icone||'circle'}" style="color:${esc(c.cor)}"></i> ${esc(c.nome)}</span>
+        <span style="font-size:12px;color:var(--emerald);font-weight:800;cursor:pointer;text-decoration:underline" onclick="abrirAlocacaoModal('${esc(c.id)}','${ym}')">Orçamento: ${fmtMoney(alocado)} <i class="fas fa-pen" style="font-size:9px"></i></span>
+      </div>
+      <div class="progress-outer"><div class="progress-inner" style="width:${pct}%;background:${corBarra}"></div></div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span style="font-size:11.5px;color:var(--gray-500)">Gasto: ${fmtMoney(gasto)}</span>
+        <span style="font-size:11.5px;font-weight:800;color:${corSaldo}">Saldo: ${fmtMoney(saldo)}</span>
+      </div>
+    </div>`;
+  }).join('') || '<p style="font-size:13px;color:var(--gray-300);text-align:center;padding:10px 0">Defina orçamentos em Config → Categorias</p>';
+}
+function abrirAlocacaoModal(categoriaId,ym){
+  const db=getDBSync();
+  const cat=getCategoria(db,categoriaId); if(!cat) return;
+  document.getElementById('alocacao-categoria-id').value=categoriaId;
+  document.getElementById('alocacao-ym').value=ym;
+  document.getElementById('modal-alocacao-title').textContent=`💰 ${esc(cat.nome)}`;
+  document.getElementById('alocacao-info').textContent=`${fmtMesAno(ym)} • padrão da categoria: ${fmtMoney(cat.orcamento||0)}`;
+  document.getElementById('alocacao-valor').value=alocacaoCategoriaMes(db,categoriaId,ym);
+  openModal('modal-alocacao');
+}
+async function salvarAlocacao(){
+  const categoriaId=document.getElementById('alocacao-categoria-id').value;
+  const ym=document.getElementById('alocacao-ym').value;
+  const valor=parseFloat(document.getElementById('alocacao-valor').value)||0;
+  const db=await getDB();
+  if(!db.orcamentosMensais) db.orcamentosMensais={};
+  if(!db.orcamentosMensais[ym]) db.orcamentosMensais[ym]={};
+  db.orcamentosMensais[ym][categoriaId]=valor;
+  await saveDB(db); closeModal('modal-alocacao');
+  showToast('Orçamento ajustado ✅','success');
+  renderOrcamento(db);
+}
+function usarValorPadraoAlocacao(){
+  const categoriaId=document.getElementById('alocacao-categoria-id').value;
+  const db=getDBSync();
+  const cat=getCategoria(db,categoriaId);
+  document.getElementById('alocacao-valor').value=cat?(cat.orcamento||0):0;
+}
+function last3MonthKeys(){
+  const out=[];
+  for(let i=2;i>=0;i--){ const d=new Date(); d.setMonth(d.getMonth()-i); out.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
+  return out;
+}
+function renderProjecao(){
+  const db=getDBSync();
+  const ctx=document.getElementById('chart-projecao'); if(!ctx) return;
+  if(typeof Chart==='undefined') return;
+  const anos=parseInt(document.getElementById('proj-anos').value)||10;
+  const taxaAnual=parseFloat(document.getElementById('proj-taxa').value)||0;
+  const atual=netWorth(db);
+  const meses=last3MonthKeys();
+  const aportes=meses.map(m=>{ const {receita,despesa}=monthTotals(db,m); return receita-despesa; });
+  const temDados=db.transacoes.length>0;
+  const aporteMedio=temDados?(aportes.reduce((a,b)=>a+b,0)/aportes.length):0;
+  const taxaMensal=Math.pow(1+taxaAnual/100,1/12)-1;
+  const labels=['Hoje']; const serie=[atual];
+  let valor=atual;
+  for(let ano=1;ano<=anos;ano++){
+    for(let m=0;m<12;m++){ valor=valor*(1+taxaMensal)+aporteMedio; }
+    labels.push(`${ano}a`); serie.push(valor);
+  }
+  if(chartProjecao) chartProjecao.destroy();
+  const isDark=document.body.classList.contains('dark');
+  chartProjecao=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Patrimônio projetado',data:serie,borderColor:'#B8860B',backgroundColor:'rgba(184,134,11,0.12)',fill:true,tension:.25,borderWidth:3,pointRadius:2}]},options:{plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>'R$ '+Math.round(v/1000)+'k',color:isDark?'#C7CBDA':'#4A4A6A'},grid:{color:isDark?'rgba(255,255,255,.06)':'rgba(0,0,0,.04)'}},x:{ticks:{color:isDark?'#C7CBDA':'#4A4A6A'},grid:{display:false}}}}});
+  const final=serie[serie.length-1];
+  document.getElementById('proj-sub').innerHTML=temDados
+    ?`Com base na sua média de sobra mensal dos últimos 3 meses (<strong>${fmtMoney(aporteMedio)}</strong>) e um rendimento de ${taxaAnual}% ao ano, em ${anos} anos seu patrimônio pode chegar a aproximadamente <strong style="color:var(--gold)">${fmtMoney(final)}</strong>. Isso é só uma estimativa simples — não considera inflação nem imprevistos.`
+    :'Registre alguns lançamentos para uma projeção baseada no seu histórico real.';
+}
+
+// ════ CATEGORIAS (gerenciamento) ════
+function openCategoriasManager(){ switchCatManagerTab('despesa'); openModal('modal-categorias'); }
+function switchCatManagerTab(tipo){
+  currentCatManagerTab=tipo;
+  document.getElementById('cat-tab-despesa').classList.toggle('active',tipo==='despesa');
+  document.getElementById('cat-tab-receita').classList.toggle('active',tipo==='receita');
+  renderCategoriasManager();
+}
+function renderCategoriasManager(){
+  const db=getDBSync();
+  const cats=db.categorias.filter(c=>c.tipo===currentCatManagerTab);
+  document.getElementById('categorias-manager-list').innerHTML=cats.length?cats.map(c=>`
+    <div class="item-card" style="margin-bottom:8px">
+      <div class="item-icon" style="background:${esc(c.cor)}"><i class="fas fa-${esc(c.icone||'circle')}"></i></div>
+      <div class="item-info"><strong>${esc(c.nome)}</strong>${c.tipo==='despesa'?`<span>${c.orcamento>0?'Orçamento padrão: '+fmtMoney(c.orcamento):'Sem orçamento padrão definido'}</span>`:''}</div>
+      <div class="item-actions">
+        <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="openCategoriaModal('${esc(c.id)}')"><i class="fas fa-edit"></i></button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDelete('categoria','${esc(c.id)}','a categoria ${escJsAttr(c.nome)}')"><i class="fas fa-trash"></i></button>
+      </div>
+    </div>`).join('') : '<p style="font-size:13px;color:var(--gray-300);text-align:center;padding:16px 0">Nenhuma categoria ainda</p>';
+}
+function buildCategoriaIconPicker(){
+  const wrap=document.getElementById('categoria-icon-picker');
+  wrap.innerHTML=CATEGORIA_ICONS.map(ic=>`<div class="icon-opt${ic===selectedCategoriaIcon?' selected':''}" data-icon="${ic}" onclick="selectCategoriaIcon(this)"><i class="fas fa-${ic}"></i></div>`).join('');
+}
+function selectCategoriaIcon(el){ document.querySelectorAll('#categoria-icon-picker .icon-opt').forEach(o=>o.classList.remove('selected')); el.classList.add('selected'); selectedCategoriaIcon=el.dataset.icon; }
+function selectCategoriaColor(el){ document.querySelectorAll('#categoria-color-picker .color-opt').forEach(o=>o.classList.remove('selected')); el.classList.add('selected'); selectedCategoriaColor=el.dataset.color; }
+function openCategoriaModal(id){
+  document.getElementById('categoria-edit-id').value=id||'';
+  document.getElementById('categoria-tipo').value=currentCatManagerTab;
+  document.getElementById('modal-categoria-title').textContent=id?'✏️ Editar Categoria':'🏷️ Nova Categoria';
+  document.getElementById('categoria-orcamento-wrap').style.display=currentCatManagerTab==='despesa'?'block':'none';
+  if(id){
+    const db=getDBSync(); const c=db.categorias.find(x=>x.id===id); if(!c) return;
+    document.getElementById('categoria-nome').value=c.nome;
+    document.getElementById('categoria-orcamento').value=c.orcamento||'';
+    selectedCategoriaColor=c.cor; selectedCategoriaIcon=c.icone||'ellipsis-h';
+  } else {
+    document.getElementById('categoria-nome').value='';
+    document.getElementById('categoria-orcamento').value='';
+    selectedCategoriaColor='#0B5A47'; selectedCategoriaIcon='ellipsis-h';
+  }
+  buildCategoriaIconPicker();
+  document.querySelectorAll('#categoria-color-picker .color-opt').forEach(o=>o.classList.toggle('selected',o.dataset.color===selectedCategoriaColor));
+  openModal('modal-categoria');
+}
+async function saveCategoria(){
+  const nome=document.getElementById('categoria-nome').value.trim();
+  if(!nome){ showToast('Nome é obrigatório','error'); return; }
+  const orcamento=parseFloat(document.getElementById('categoria-orcamento').value)||0;
+  const tipo=document.getElementById('categoria-tipo').value;
+  const db=await getDB();
+  const id=document.getElementById('categoria-edit-id').value;
+  const cat={nome,orcamento:tipo==='despesa'?orcamento:0,cor:selectedCategoriaColor,icone:selectedCategoriaIcon,tipo};
+  if(id){ const idx=db.categorias.findIndex(c=>c.id===id); db.categorias[idx]={...db.categorias[idx],...cat}; showToast('Categoria atualizada ✅','success'); }
+  else { db.categorias.push({id:uid(),...cat}); showToast('Categoria criada! 🏷️','success'); }
+  await saveDB(db); closeModal('modal-categoria'); renderCategoriasManager(); refreshAll();
+}
+
+// ════ RECORRÊNCIAS (gerenciamento — salário, contas fixas...) ════
+let currentRecorManagerTab='receita';
+function openRecorrenciasManager(){
+  switchRecorManagerTab('receita');
+  renderSugestoesAssinaturas(getDBSync());
+  openModal('modal-recorrencias');
+}
+function switchRecorManagerTab(tipo){
+  currentRecorManagerTab=tipo;
+  document.getElementById('recor-tab-receita').classList.toggle('active',tipo==='receita');
+  document.getElementById('recor-tab-despesa').classList.toggle('active',tipo==='despesa');
+  renderRecorrenciasManager();
+}
+// ════ DETECÇÃO DE ASSINATURAS (gastos repetidos que ainda não são automáticos) ════
+function detectarAssinaturas(db){
+  const normalizar=s=>(s||'').trim().toLowerCase();
+  const ignoradas=new Set(db.assinaturasIgnoradas||[]);
+  const grupos={};
+  db.transacoes.forEach(t=>{
+    if(t.tipo!=='despesa') return;
+    if(t.recorrenciaId) return; // já é automático
+    if(t.parcela) return; // é parcelamento, não assinatura
+    const key=normalizar(t.desc);
+    if(!key) return;
+    (grupos[key]=grupos[key]||[]).push(t);
+  });
+  const sugestoes=[];
+  Object.entries(grupos).forEach(([key,items])=>{
+    if(ignoradas.has(key)) return;
+    const meses=new Set(items.map(t=>monthKey(t.data)));
+    if(meses.size<2) return; // precisa aparecer em pelo menos 2 meses diferentes
+    const valores=items.map(t=>t.valor);
+    const media=valores.reduce((a,b)=>a+b,0)/valores.length;
+    const variaMuito=media>0&&valores.some(v=>Math.abs(v-media)/media>0.2); // mais de 20% de variação foge do padrão de assinatura
+    if(variaMuito) return;
+    const maisRecente=[...items].sort((a,b)=>b.data.localeCompare(a.data))[0];
+    sugestoes.push({
+      key, desc:maisRecente.desc, valorMedio:media, meses:meses.size,
+      contaId:maisRecente.contaId, categoriaId:maisRecente.categoriaId||null,
+      diaDoMes:parseInt(maisRecente.data.slice(8,10),10)||1
+    });
+  });
+  return sugestoes.sort((a,b)=>b.meses-a.meses);
+}
+let sugestoesAssinaturasAtuais=[]; // guarda os objetos por índice — evita colocar texto livre (descrição) dentro de onclick="...", que quebraria se tivesse aspas
+function renderSugestoesAssinaturas(db){
+  const el=document.getElementById('recor-sugestoes'); if(!el) return;
+  sugestoesAssinaturasAtuais=detectarAssinaturas(db);
+  if(!sugestoesAssinaturasAtuais.length){ el.innerHTML=''; return; }
+  el.innerHTML=`<div class="info-box" style="margin-bottom:12px"><strong>💡 Parecem assinaturas:</strong> encontrei estes gastos que se repetem todo mês e ainda não são automáticos.</div>`+
+    sugestoesAssinaturasAtuais.map((s,i)=>`<div class="item-card" style="margin-bottom:8px">
+      <div class="item-icon" style="background:var(--gold)"><i class="fas fa-lightbulb"></i></div>
+      <div class="item-info"><strong>${esc(s.desc)}</strong><span>${s.meses} meses seguidos • ~${fmtMoney(s.valorMedio)}/mês</span></div>
+      <div class="item-actions" style="margin-top:0">
+        <button class="btn btn-success btn-sm" onclick="aceitarSugestaoAssinatura(${i})" title="Transformar em automática"><i class="fas fa-check"></i></button>
+        <button class="btn btn-danger btn-sm" onclick="ignorarSugestaoAssinatura(${i})" title="Ignorar"><i class="fas fa-times"></i></button>
+      </div>
+    </div>`).join('');
+}
+async function aceitarSugestaoAssinatura(idx){
+  const s=sugestoesAssinaturasAtuais[idx]; if(!s) return;
+  const db=await getDB();
+  if(!db.recorrencias) db.recorrencias=[];
+  if(!db.assinaturasIgnoradas) db.assinaturasIgnoradas=[];
+  const hojeYm=localToday().slice(0,7);
+  db.recorrencias.push({
+    id:uid(), tipo:'despesa', desc:s.desc, valor:Math.round(s.valorMedio*100)/100,
+    diaDoMes:s.diaDoMes, contaId:s.contaId, categoriaId:s.categoriaId,
+    dataInicio:localToday(), ativa:true, ultimoMesGerado:hojeYm, // os meses passados já têm os lançamentos manuais — só gera dali pra frente
+    createdAt:new Date().toISOString()
+  });
+  if(!db.assinaturasIgnoradas.includes(s.key)) db.assinaturasIgnoradas.push(s.key);
+  await saveDB(db);
+  showToast(`"${s.desc}" virou uma recorrência automática! 🔄`,'success');
+  renderSugestoesAssinaturas(db);
+  renderRecorrenciasManager();
+}
+async function ignorarSugestaoAssinatura(idx){
+  const s=sugestoesAssinaturasAtuais[idx]; if(!s) return;
+  const db=await getDB();
+  if(!db.assinaturasIgnoradas) db.assinaturasIgnoradas=[];
+  if(!db.assinaturasIgnoradas.includes(s.key)) db.assinaturasIgnoradas.push(s.key);
+  await saveDB(db);
+  showToast('Sugestão ignorada','');
+  renderSugestoesAssinaturas(db);
+}
+function renderRecorrenciasManager(){
+  const db=getDBSync();
+  const lista=(db.recorrencias||[]).filter(r=>r.tipo===currentRecorManagerTab);
+  const el=document.getElementById('recorrencias-manager-list');
+  if(!lista.length){ el.innerHTML='<p style="font-size:13px;color:var(--gray-300);text-align:center;padding:16px 0">Nenhuma recorrência ainda</p>'; return; }
+  el.innerHTML=lista.map(r=>{
+    const conta=getConta(db,r.contaId);
+    const cat=r.categoriaId?getCategoria(db,r.categoriaId):null;
+    const proximoYm=r.ultimoMesGerado?nextYm(r.ultimoMesGerado):(r.dataInicio?r.dataInicio.slice(0,7):localToday().slice(0,7));
+    const proxima=dateForYm(proximoYm,r.diaDoMes);
+    return `<div class="item-card" style="margin-bottom:8px;${r.ativa?'':'opacity:.55'}">
+      <div class="item-icon" style="background:${esc(cat?cat.cor:(r.tipo==='receita'?'#1A9B60':'#C0392B'))}"><i class="fas fa-${esc(cat?cat.icone:'sync-alt')}"></i></div>
+      <div class="item-info">
+        <strong>${esc(r.desc)}${r.ativa?'':' <span class=\"tag tag-amber\" style=\"margin-left:4px\">Pausada</span>'}</strong>
+        <span>${conta?esc(conta.nome):''}${cat?' • '+esc(cat.nome):''} • dia ${r.diaDoMes} • próxima ${fmtDate(proxima)}</span>
+      </div>
+      <div>
+        <div class="item-val ${r.tipo==='receita'?'pos':'neg'}">${fmtMoney(r.valor)}</div>
+        <div class="item-actions" style="margin-top:6px">
+          <button class="btn btn-sm" style="background:var(--emerald-pale);color:var(--emerald)" onclick="openRecorrenciaModal('${esc(r.id)}')"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDelete('recorrencia','${esc(r.id)}','a recorrência ${escJsAttr(r.desc)}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+function openRecorrenciaModal(id){
+  const db=getDBSync();
+  if(!db.contas.filter(c=>!c.arquivada).length){ showToast('Cadastre uma conta antes de criar uma recorrência','error'); return; }
+  document.getElementById('recor-edit-id').value=id||'';
+  document.getElementById('recor-tipo').value=currentRecorManagerTab;
+  document.getElementById('modal-recorrencia-title').textContent=id?'✏️ Editar recorrência':'🔄 Nova recorrência';
+  const contaSel=document.getElementById('recor-conta-id');
+  const catSel=document.getElementById('recor-categoria-id');
+  const contaOpts=db.contas.filter(c=>!c.arquivada).map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+  contaSel.innerHTML=contaOpts||'<option value="">Nenhuma conta cadastrada</option>';
+  const catOpts=db.categorias.filter(c=>c.tipo===currentRecorManagerTab).map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+  catSel.innerHTML=catOpts;
+  if(id){
+    const r=(db.recorrencias||[]).find(x=>x.id===id); if(!r) return;
+    document.getElementById('recor-desc').value=r.desc;
+    document.getElementById('recor-valor').value=r.valor;
+    document.getElementById('recor-dia').value=r.diaDoMes;
+    document.getElementById('recor-data-inicio').value=r.dataInicio||localToday();
+    document.getElementById('recor-ativa').checked=r.ativa!==false;
+    if(r.contaId) contaSel.value=r.contaId;
+    if(r.categoriaId) catSel.value=r.categoriaId;
+  } else {
+    document.getElementById('recor-desc').value='';
+    document.getElementById('recor-valor').value='';
+    document.getElementById('recor-dia').value='';
+    document.getElementById('recor-data-inicio').value=localToday();
+    document.getElementById('recor-ativa').checked=true;
+  }
+  openModal('modal-recorrencia');
+}
+async function saveRecorrencia(){
+  const desc=document.getElementById('recor-desc').value.trim();
+  const valor=parseFloat(document.getElementById('recor-valor').value)||0;
+  const dia=parseInt(document.getElementById('recor-dia').value)||0;
+  const contaId=document.getElementById('recor-conta-id').value;
+  const categoriaId=document.getElementById('recor-categoria-id').value||null;
+  const dataInicio=document.getElementById('recor-data-inicio').value||localToday();
+  const ativa=document.getElementById('recor-ativa').checked;
+  const tipo=document.getElementById('recor-tipo').value;
+  if(!desc){ showToast('Informe a descrição','error'); return; }
+  if(!valor){ showToast('Informe o valor','error'); return; }
+  if(!dia||dia<1||dia>31){ showToast('Informe um dia do mês válido (1 a 31)','error'); return; }
+  if(!contaId){ showToast('Selecione a conta','error'); return; }
+  const db=await getDB();
+  if(!db.recorrencias) db.recorrencias=[];
+  const id=document.getElementById('recor-edit-id').value;
+  const rec={tipo,desc,valor,diaDoMes:dia,contaId,categoriaId,dataInicio,ativa};
+  if(id){
+    const idx=db.recorrencias.findIndex(r=>r.id===id);
+    if(idx>-1) db.recorrencias[idx]={...db.recorrencias[idx],...rec};
+    showToast('Recorrência atualizada ✅','success');
+  } else {
+    db.recorrencias.push({id:uid(),...rec,ultimoMesGerado:null,createdAt:new Date().toISOString()});
+    showToast('Recorrência criada! 🔄','success');
+  }
+  processRecorrencias(db);
+  await saveDB(db); closeModal('modal-recorrencia'); renderRecorrenciasManager(); refreshAll();
+}
+
+// ════ EXPORT / IMPORT ════
+function exportData(){
+  const db=getDBSync();
+  const blob=new Blob([JSON.stringify(db,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`financas_backup_${new Date().toISOString().slice(0,10)}.json`; a.click();
+  showToast('Backup exportado! 📦','success');
+}
+function exportCSV(){
+  const db=getDBSync();
+  const rows=[['Data','Tipo','Descrição','Categoria','Conta','Valor','Status']];
+  [...db.transacoes].sort((a,b)=>a.data.localeCompare(b.data)).forEach(t=>{
+    const cat=t.categoriaId?getCategoria(db,t.categoriaId):null;
+    const conta=getConta(db,t.contaId);
+    rows.push([fmtDate(t.data),t.tipo,t.desc,cat?cat.nome:'',conta?conta.nome:'',t.valor,t.pago===false?'Pendente':'Pago']);
+  });
+  const csv=rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`financas_relatorio_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  showToast('Relatório CSV exportado! 📊','success');
+}
+function importData(){ document.getElementById('import-file').click(); }
+function handleImport(e){
+  const file=e.target.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=async ev=>{ try{ const data=JSON.parse(ev.target.result); await saveDB(data); showToast('Backup restaurado! ✅','success'); showPage('dashboard'); refreshAll(); } catch{ showToast('Arquivo inválido','error'); } };
+  reader.readAsText(file);
+  e.target.value='';
+}
+
+// ════ DELETE ════
+function confirmDelete(type,id,desc){
+  deleteTarget={type,id};
+  document.getElementById('delete-desc').innerHTML=`Você está prestes a excluir <strong>${esc(desc)}</strong>. Esta ação não pode ser desfeita.`;
+  document.getElementById('delete-confirm-input').value='';
+  document.getElementById('btn-confirm-delete').disabled=true;
+  openModal('modal-delete');
+}
+function checkDeleteInput(el){ const ok=el.value.trim()==='REMOVER'; document.getElementById('btn-confirm-delete').disabled=!ok; el.style.borderColor=el.value&&!ok?'var(--rose)':''; }
+async function executeDelete(){
+  if(!deleteTarget) return;
+  const db=await getDB();
+  if(deleteTarget.type==='lanc'){ db.transacoes=db.transacoes.filter(t=>t.id!==deleteTarget.id); showToast('Lançamento removido','success'); }
+  else if(deleteTarget.type==='conta'){
+    db.contas=db.contas.filter(c=>c.id!==deleteTarget.id);
+    db.transacoes=db.transacoes.filter(t=>t.contaId!==deleteTarget.id&&t.contaDestinoId!==deleteTarget.id);
+    db.recorrencias=(db.recorrencias||[]).filter(r=>r.contaId!==deleteTarget.id);
+    showToast('Conta removida (e lançamentos/recorrências vinculados)','success');
+  }
+  else if(deleteTarget.type==='meta'){ db.metas=db.metas.filter(m=>m.id!==deleteTarget.id); showToast('Meta removida','success'); }
+  else if(deleteTarget.type==='categoria'){ db.categorias=db.categorias.filter(c=>c.id!==deleteTarget.id); showToast('Categoria removida','success'); }
+  else if(deleteTarget.type==='recorrencia'){ db.recorrencias=(db.recorrencias||[]).filter(r=>r.id!==deleteTarget.id); showToast('Recorrência removida (lançamentos já gerados continuam no histórico)','success'); }
+  else if(deleteTarget.type==='parcelamento'){ db.transacoes=db.transacoes.filter(t=>t.recorrenteId!==deleteTarget.id); showToast('Parcelamento removido (todas as parcelas)','success'); }
+  await saveDB(db); closeModal('modal-delete'); deleteTarget=null; refreshAll();
+  if(document.getElementById('modal-categorias').classList.contains('active')) renderCategoriasManager();
+  if(document.getElementById('modal-recorrencias').classList.contains('active')) renderRecorrenciasManager();
+}
+
+// ════ ADMIN — controle de quem pode usar o app ════
+const PLANOS = {
+  trial:      { label: '🎁 Trial',       dias: 30  },
+  mensal:     { label: '📅 Mensal',      dias: 30  },
+  trimestral: { label: '📦 Trimestral',  dias: 90  },
+  semestral:  { label: '⭐ Semestral',   dias: 180 },
+  anual:      { label: '🏆 Anual',       dias: 365 },
+  vitalicio:  { label: '♾️ Vitalício',   dias: null },
+};
+function addDias(dias){
+  if(dias===null||dias===undefined) return null; // vitalício: sem data de expiração
+  const d=new Date(); d.setDate(d.getDate()+dias); return d.toISOString();
+}
+function licencaStatus(expiry){
+  if(!expiry) return { ok:true, label:'♾️ Vitalício', dias:null };
+  const diff=Math.ceil((new Date(expiry)-new Date())/864e5);
+  if(diff<=0) return { ok:false, label:'Expirado', dias:diff };
+  if(diff<=7) return { ok:true, label:`⚠️ ${diff}d restantes`, dias:diff, alerta:true };
+  return { ok:true, label:`✅ ${diff}d restantes`, dias:diff };
+}
+async function loadAdminPanel(){
+  const isAdmin = window.currentUser && window.currentUser.email === window._ADMIN_EMAIL;
+  const panel = document.getElementById('admin-panel');
+  if(!panel) return;
+  panel.style.display = isAdmin ? 'block' : 'none';
+  if(!isAdmin) return;
+  await renderAdminEmailList();
+}
+async function renderAdminEmailList(){
+  const {collection, getDocs} = window._fbFns;
+  const list = document.getElementById('admin-email-list');
+  try{
+    const snap = await getDocs(collection(window._fbDb, 'allowed_emails'));
+    if(snap.empty){ list.innerHTML='<p style="color:var(--gray-500);font-size:13px;text-align:center;padding:16px">Nenhum e-mail liberado ainda — só o admin consegue entrar.</p>'; return; }
+    let html='';
+    snap.forEach(d=>{
+      const data = d.data();
+      const email = data.email || d.id.replace(/_/g,'.');
+      const plano = data.plano || 'mensal';
+      const st = licencaStatus(data.expiry);
+      const stColor = !st.ok ? 'var(--rose)' : st.alerta ? 'var(--amber)' : 'var(--mint)';
+      const planoLabel = PLANOS[plano]?.label || plano;
+      html+=`<div style="padding:12px 0;border-bottom:1px solid var(--gray-100)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="min-width:0">
+            <div style="font-size:14px;font-weight:800;color:var(--gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(email)}</div>
+            <div style="font-size:12px;color:var(--gray-500);margin-top:2px">${planoLabel}</div>
+            <div style="font-size:12px;font-weight:700;color:${stColor};margin-top:2px">${st.label}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button onclick="adminRenew('${esc(d.id)}','${esc(email)}')" class="btn btn-success btn-sm" style="font-size:11px;padding:6px 10px" title="Renovar"><i class="fas fa-redo"></i></button>
+            <button onclick="adminRemoveEmail('${esc(d.id)}','${esc(email)}')" class="btn btn-danger btn-sm" style="font-size:11px;padding:6px 10px" title="Remover"><i class="fas fa-trash"></i></button>
+          </div>
+        </div>
+      </div>`;
+    });
+    list.innerHTML = html;
+  } catch(e){ list.innerHTML='<p style="color:var(--rose);font-size:13px;padding:12px">Erro ao carregar lista. Confira as regras do Firestore para a coleção allowed_emails.</p>'; }
+}
+async function adminAddEmail(){
+  const input  = document.getElementById('admin-new-email');
+  const plano  = document.getElementById('admin-new-plano').value;
+  const email  = input.value.trim().toLowerCase();
+  if(!email || !email.includes('@')){ showToast('E-mail inválido','error'); return; }
+  const {doc, setDoc} = window._fbFns;
+  const key    = email.replace(/\./g,'_');
+  const expiry = addDias(PLANOS[plano].dias);
+  try{
+    await setDoc(doc(window._fbDb,'allowed_emails',key),{email, plano, expiry, addedAt: new Date().toISOString()});
+    input.value='';
+    showToast(`${email} liberado (${PLANOS[plano].label})! ✅`,'success');
+    await renderAdminEmailList();
+  } catch(e){ showToast('Erro ao liberar e-mail — confira as regras do Firestore','error'); }
+}
+async function adminRenew(key, email){
+  const {doc, getDoc, setDoc} = window._fbFns;
+  try{
+    const snap = await getDoc(doc(window._fbDb,'allowed_emails',key));
+    const data  = snap.exists() ? snap.data() : {};
+    const plano = data.plano || 'mensal';
+    const expiry = addDias(PLANOS[plano]?.dias ?? 30);
+    await setDoc(doc(window._fbDb,'allowed_emails',key),{...data, expiry, renewedAt: new Date().toISOString()});
+    showToast(`${email} renovado! ✅`,'success');
+    await renderAdminEmailList();
+  } catch(e){ showToast('Erro ao renovar','error'); }
+}
+async function adminRemoveEmail(key, email){
+  if(!confirm(`Remover o acesso de ${email}?`)) return;
+  const {doc, deleteDoc} = window._fbFns;
+  try{
+    await deleteDoc(doc(window._fbDb,'allowed_emails',key));
+    showToast(`${email} removido`,'success');
+    await renderAdminEmailList();
+  } catch(e){ showToast('Erro ao remover','error'); }
+}
+</script>
+</body>
+</html>
